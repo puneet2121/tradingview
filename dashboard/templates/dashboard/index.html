@@ -1,0 +1,32 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Local Trading Dashboard</title>
+    <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
+    <script src="{% static 'vendor/lightweight-charts.standalone.production.js' %}" defer></script>
+    <script src="{% static 'dashboard/app.js' %}" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span>Trading Dashboard</span>
+      </div>
+      <label class="chart-count">
+        <span>Charts</span>
+        <select id="chart-count" aria-label="Number of charts">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
+      </label>
+    </header>
+
+    <main id="chart-grid" class="chart-grid chart-grid-4" aria-live="polite"></main>
+  </body>
+</html>
