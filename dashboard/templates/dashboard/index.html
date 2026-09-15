@@ -25,8 +25,172 @@
           <option value="8">8</option>
         </select>
       </label>
+      <div class="paper-account" id="paper-account">
+        <span id="paper-equity">$10,000.00</span>
+        <span id="paper-pnl">$0.00</span>
+        <input id="paper-watchlist-input" type="text" value="MU, SOFI, AAPL, MSFT, HOOD, NOW, QQQ, SPY, BTC, ETH" aria-label="Paper scanner symbols">
+        <input id="paper-watchlist-timeframes" type="text" value="3m, 5m" aria-label="Paper scanner timeframes">
+        <button type="button" id="paper-watchlist-save">Save</button>
+        <button type="button" id="paper-scan-now">Scan</button>
+        <button type="button" id="strategy-toggle">Strategies</button>
+        <button type="button" id="option-chain-toggle">Options</button>
+        <button type="button" id="paper-history-toggle">History</button>
+        <button type="button" id="paper-reset">Reset</button>
+      </div>
     </header>
 
     <main id="chart-grid" class="chart-grid chart-grid-4" aria-live="polite"></main>
+    <aside class="paper-history" id="paper-history" hidden>
+      <div class="paper-history-header">
+        <strong>Paper Trades</strong>
+        <button type="button" data-open-activity>Activity</button>
+        <button type="button" id="paper-history-close">x</button>
+      </div>
+      <div id="paper-history-list" class="paper-history-list"></div>
+    </aside>
+    <aside class="paper-history trade-activity" id="trade-activity" aria-label="Trade activity" hidden>
+      <div class="paper-history-header">
+        <strong>Trade Activity</strong>
+        <button type="button" id="activity-refresh">Refresh</button>
+        <button type="button" id="activity-close" aria-label="Close trade activity">x</button>
+      </div>
+      <div id="activity-status" role="status"></div>
+      <div id="activity-list" class="paper-history-list"></div>
+      <button type="button" id="activity-more" hidden>Load Older</button>
+    </aside>
+    <aside class="strategy-drawer" id="strategy-drawer" hidden>
+      <div class="strategy-header">
+        <strong>Strategies</strong>
+        <button type="button" id="strategy-close">x</button>
+      </div>
+      <div class="strategy-content">
+        <section class="strategy-list-panel">
+          <h2>Saved</h2>
+          <div id="strategy-list" class="strategy-list"></div>
+        </section>
+        <form id="strategy-form" class="strategy-form">
+          <input id="strategy-id" type="hidden">
+          <label>
+            <span>Name</span>
+            <input id="strategy-name" type="text" value="testing1" maxlength="64">
+          </label>
+          <label class="strategy-check">
+            <input id="strategy-enabled" type="checkbox" checked>
+            <span>Enabled</span>
+          </label>
+          <label>
+            <span>Trade</span>
+            <select id="strategy-trade-asset">
+              <option value="option">Options</option>
+              <option value="underlying">Underlying</option>
+            </select>
+          </label>
+          <label>
+            <span>Risk %</span>
+            <input id="strategy-risk" type="number" min="0.1" max="100" step="0.1" value="2">
+          </label>
+          <label>
+            <span>Min DTE</span>
+            <input id="strategy-min-dte" type="number" min="0" max="365" step="1" value="7">
+          </label>
+          <label>
+            <span>Max DTE</span>
+            <input id="strategy-max-dte" type="number" min="0" max="365" step="1" value="14">
+          </label>
+          <label>
+            <span>Strike</span>
+            <select id="strategy-strike-mode">
+              <option value="atm">ATM</option>
+              <option value="itm">ITM</option>
+              <option value="otm">OTM</option>
+            </select>
+          </label>
+          <label>
+            <span>Profit %</span>
+            <input id="strategy-take-profit" type="number" min="0" max="999" step="1" value="100">
+          </label>
+          <label>
+            <span>Loss %</span>
+            <input id="strategy-stop-loss" type="number" min="0" max="100" step="1" value="50">
+          </label>
+          <label>
+            <span>Spread %</span>
+            <input id="strategy-max-spread" type="number" min="0" max="999" step="1" value="50">
+          </label>
+          <label class="strategy-rule-label">
+            <span>Rules</span>
+            <textarea id="strategy-rule-text" rows="8"></textarea>
+          </label>
+          <div class="strategy-actions">
+            <button type="button" id="strategy-new">New</button>
+            <button type="submit" id="strategy-save">Save Strategy</button>
+          </div>
+          <div id="strategy-status" class="strategy-status" role="status"></div>
+        </form>
+      </div>
+    </aside>
+    <aside class="option-chain-drawer" id="option-chain-drawer" hidden>
+      <div class="option-chain-header">
+        <strong>Yahoo Option Chain</strong>
+        <button type="button" id="option-chain-close">x</button>
+      </div>
+      <div class="option-chain-controls">
+        <input id="option-underlying" type="text" value="AAPL" aria-label="Option underlying symbol">
+        <select id="option-expiration" aria-label="Option expiration"></select>
+        <input id="option-quantity" type="number" min="1" max="1000" value="1" aria-label="Option paper quantity">
+        <button type="button" id="option-chain-refresh">Refresh</button>
+      </div>
+      <div class="option-chain-summary" id="option-chain-summary">No chain loaded</div>
+      <div class="option-chain-content">
+        <section>
+          <h2>Calls</h2>
+          <div class="option-chain-table-wrap">
+            <table class="option-chain-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>Last</th>
+                  <th>IV</th>
+                  <th>Delta</th>
+                  <th>Theta</th>
+                  <th>Vol</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="option-calls"></tbody>
+            </table>
+          </div>
+        </section>
+        <section>
+          <h2>Puts</h2>
+          <div class="option-chain-table-wrap">
+            <table class="option-chain-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>Last</th>
+                  <th>IV</th>
+                  <th>Delta</th>
+                  <th>Theta</th>
+                  <th>Vol</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="option-puts"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <div class="option-paper-header">
+        <strong>Option Paper Trades</strong>
+        <button type="button" data-open-activity>Activity</button>
+        <button type="button" id="option-paper-reset">Reset</button>
+      </div>
+      <div id="option-paper-list" class="option-paper-list"></div>
+    </aside>
   </body>
 </html>
