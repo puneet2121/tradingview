@@ -397,8 +397,11 @@ def option_metrics(underlying_price: float, side: str, iv: float) -> dict[str, D
     }
 
 
-def calculate_strategy_signals(bars: list[dict[str, Any]], strategy: Strategy) -> list[dict[str, Any]]:
+def calculate_strategy_signals(bars: list[dict[str, Any]], strategy: Strategy, timeframe: str | None = None) -> list[dict[str, Any]]:
     rules = parse_strategy_text(strategy.rule_text)
+    if rules.strategy_type == "session_breakout":
+        return calculate_session_breakout_signals(bars, rules, timeframe)
+
     emas = {rule.ema_period: calculate_ema(bars, rule.ema_period) for rule in rules.rules}
     vwap = calculate_vwap(bars)
     signals = []
@@ -432,6 +435,109 @@ def calculate_strategy_signals(bars: list[dict[str, Any]], strategy: Strategy) -
     return signals
 
 
+def calculate_session_breakout_signals(bars: list[dict[str, Any]], rules, timeframe: str | None = None) -> list[dict[str, Any]]:
+    if len(bars) < 2:
+        return []
+
+    zone = ZoneInfo(rules.timezone)
+    session_start = minutes_since_midnight(rules.session_start)
+    session_end = minutes_since_midnight(rules.session_end)
+    signal_start = minutes_since_midnight(rules.signal_start or rules.session_end)
+    cutoff = minutes_since_midnight(rules.cutoff)
+    bar_seconds = int(get_timeframe(timeframe)["seconds"]) if timeframe else 0
+    if bar_seconds >= 86400:
+        return []
+    now = time.time()
+    reward_risk = float(rules.reward_risk_ratio)
+    sess_high = None
+    sess_low = None
+    locked_high = None
+    locked_low = None
+    signal_taken_today = False
+    session_date = None
+    previous_close = None
+    signals = []
+
+    for bar in bars:
+        bar_time = int(bar["time"])
+        if bar_seconds and bar_time + bar_seconds > now:
+            continue
+        local_time = datetime.fromtimestamp(bar_time, zone)
+        if local_time.date() != session_date:
+            session_date = local_time.date()
+            sess_high = sess_low = locked_high = locked_low = previous_close = None
+            signal_taken_today = False
+        minute = local_time.hour * 60 + local_time.minute
+        in_session = session_start <= minute < session_end
+        within_allowed_time = signal_start <= minute < cutoff
+        if rules.regular_hours_only and local_time.weekday() >= 5:
+            continue
+        # Signals execute at candle close; do not enter at/after the cutoff.
+        if bar_seconds and minute * 60 + local_time.second + bar_seconds >= cutoff * 60:
+            within_allowed_time = False
+
+        if in_session and (not bar_seconds or minute * 60 + local_time.second + bar_seconds <= session_end * 60):
+            if sess_high is None:
+                sess_high = float(bar["high"])
+                sess_low = float(bar["low"])
+            else:
+                sess_high = max(float(sess_high), float(bar["high"]))
+                sess_low = min(float(sess_low), float(bar["low"]))
+        elif minute >= session_end and sess_high is not None and locked_high is None:
+            locked_high = sess_high
+            locked_low = sess_low
+
+        close = float(bar["close"])
+        if (
+            previous_close is not None
+            and within_allowed_time
+            and not in_session
+            and locked_high is not None
+            and locked_low is not None
+            and not signal_taken_today
+        ):
+            if previous_close <= locked_high < close:
+                risk = locked_high - locked_low
+                if risk > 0:
+                    target = (close + (close - locked_low) * reward_risk
+                              if rules.regular_hours_only else locked_high + risk * reward_risk)
+                    signals.append(
+                        {
+                            "time": bar_time,
+                            "side": "BUY",
+                            "stop_price": locked_low,
+                            "target_price": target,
+                        }
+                    )
+                    signal_taken_today = True
+            elif previous_close >= locked_low > close:
+                risk = locked_high - locked_low
+                if risk > 0:
+                    target = (close - (locked_high - close) * reward_risk
+                              if rules.regular_hours_only else locked_low - risk * reward_risk)
+                    if target <= 0:
+                        previous_close = close
+                        continue
+                    signals.append(
+                        {
+                            "time": bar_time,
+                            "side": "SELL",
+                            "stop_price": locked_high,
+                            "target_price": target,
+                        }
+                    )
+                    signal_taken_today = True
+
+        previous_close = close
+
+    return signals
+
+
+def minutes_since_midnight(value: str) -> int:
+    hour, minute = [int(part) for part in value.split(":")]
+    return hour * 60 + minute
+
+
 def signal_payload(
     symbol: str,
     timeframe: str,
@@ -439,6 +545,7 @@ def signal_payload(
     signal_time: int,
     bars: list[dict[str, Any]],
     strategy_name: str = "testing1",
+    signal_details: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     signal_index = next((index for index, bar in enumerate(bars) if int(bar["time"]) == signal_time), None)
     if signal_index is None or signal_index < 1:
@@ -448,15 +555,15 @@ def signal_payload(
     previous_bar = bars[signal_index - 1]
     entry_price = float(entry_bar["close"])
     if side == "BUY":
-        stop_price = min(float(entry_bar["low"]), float(previous_bar["low"]))
+        stop_price = float((signal_details or {}).get("stop_price") or min(float(entry_bar["low"]), float(previous_bar["low"])))
         if stop_price >= entry_price:
             stop_price = entry_price * 0.995
     else:
-        stop_price = max(float(entry_bar["high"]), float(previous_bar["high"]))
+        stop_price = float((signal_details or {}).get("stop_price") or max(float(entry_bar["high"]), float(previous_bar["high"])))
         if stop_price <= entry_price:
             stop_price = entry_price * 1.005
 
-    return {
+    payload = {
         "strategy": strategy_name,
         "symbol": symbol,
         "timeframe": timeframe,
@@ -467,6 +574,9 @@ def signal_payload(
         "stop_price": stop_price,
         **option_metrics(entry_price, side, estimate_iv(bars, timeframe)),
     }
+    if signal_details and signal_details.get("target_price") is not None:
+        payload["target_price"] = float(signal_details["target_price"])
+    return payload
 
 
 def mark_automated_option_trades(strategy: Strategy, symbol: str, timeframe: str) -> list[OptionPaperTrade]:
@@ -553,6 +663,10 @@ def execute_option_signal(strategy: Strategy, payload: dict[str, Any]) -> Option
             f"{symbol} {option_type} premium {money(premium_per_contract)} is above risk budget {money(risk_amount)}."
         )
 
+    note = f"Auto {strategy.name} {signal_side}"
+    if payload.get("stop_price") is not None and payload.get("target_price") is not None:
+        note = f"{note} SL {payload['stop_price']:.2f} TP {payload['target_price']:.2f}"
+
     return open_option_trade(
         {
             "underlying_symbol": symbol,
@@ -563,7 +677,7 @@ def execute_option_signal(strategy: Strategy, payload: dict[str, Any]) -> Option
             "strategy": strategy.name,
             "timeframe": timeframe,
             "signal_time": signal_time,
-            "notes": f"Auto {strategy.name} {signal_side}",
+            "notes": note,
         },
         strategy_name=strategy.name,
     )
@@ -585,7 +699,7 @@ def scan_strategy_for_watch(
 ) -> list[PaperTrade | OptionPaperTrade]:
     # Existing exits use saved risk settings, independently of entry-rule validity.
     mark_automated_option_trades(strategy, watch.symbol, watch.timeframe)
-    parse_strategy_text(strategy.rule_text)
+    rules = parse_strategy_text(strategy.rule_text)
     state, _ = StrategyScanState.objects.get_or_create(
         strategy=strategy,
         symbol=watch.symbol,
@@ -602,12 +716,17 @@ def scan_strategy_for_watch(
     previous_checkpoint = state.last_signal_time
     new_signals = [
         signal
-        for signal in calculate_strategy_signals(bars, strategy)
+        for signal in calculate_strategy_signals(bars, strategy, watch.timeframe)
         if previous_checkpoint < signal["time"] <= decision_bar_time and signal["time"] >= live_cutoff
     ]
+    if rules.strategy_type == "session_breakout" and rules.regular_hours_only:
+        local_now = timezone.now().astimezone(ZoneInfo(rules.timezone))
+        minute = local_now.hour * 60 + local_now.minute
+        if local_now.weekday() >= 5 or not minutes_since_midnight(rules.signal_start) <= minute < minutes_since_midnight(rules.cutoff):
+            new_signals = []
     trades = []
     for signal in new_signals:
-        payload = signal_payload(watch.symbol, watch.timeframe, signal["side"], signal["time"], bars, strategy.name)
+        payload = signal_payload(watch.symbol, watch.timeframe, signal["side"], signal["time"], bars, strategy.name, signal)
         if payload:
             trade = execute_strategy_signal(strategy, payload)
             if trade:
@@ -626,12 +745,17 @@ def scan_watch_symbol(watch: PaperWatchSymbol) -> list[PaperTrade | OptionPaperT
         raise ValueError("No bars returned.")
 
     mark_symbol(watch.symbol, watch.timeframe, bars[-1])
-    decision_bar_time = int(bars[-2]["time"] if len(bars) > 1 else bars[-1]["time"])
+    bar_seconds = int(get_timeframe(watch.timeframe)["seconds"])
+    now = time.time()
+    closed_bars = [bar for bar in bars if int(bar["time"]) + bar_seconds <= now]
+    if not closed_bars:
+        return []
+    decision_bar_time = int(closed_bars[-1]["time"])
 
     trades = []
     for strategy in Strategy.objects.filter(enabled=True):
         try:
-            trades.extend(scan_strategy_for_watch(watch, strategy, bars, decision_bar_time))
+            trades.extend(scan_strategy_for_watch(watch, strategy, closed_bars, decision_bar_time))
         except Exception as exc:
             state, _ = StrategyScanState.objects.get_or_create(
                 strategy=strategy,

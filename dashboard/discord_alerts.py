@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import ssl
-from datetime import datetime, timezone as datetime_timezone
+from datetime import datetime, time, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib import error, request
@@ -17,6 +17,9 @@ from .models import TradeActivity
 
 logger = logging.getLogger(__name__)
 PACIFIC_ZONE = ZoneInfo("America/Los_Angeles")
+EASTERN_ZONE = ZoneInfo("America/New_York")
+REGULAR_MARKET_OPEN = time(9, 30)
+REGULAR_MARKET_CLOSE = time(16, 0)
 
 
 def dispatch_trade_activity_alert(event_id: int) -> None:
@@ -47,7 +50,15 @@ def should_alert(event: TradeActivity) -> bool:
         return False
     if getattr(settings, "DISCORD_ALERT_STRATEGY_ONLY", True) and event.actor != "STRATEGY":
         return False
+    if getattr(settings, "DISCORD_REGULAR_MARKET_HOURS_ONLY", True) and not is_regular_market_hours(event.recorded_at):
+        return False
     return True
+
+
+def is_regular_market_hours(value: datetime) -> bool:
+    market_time = value.astimezone(EASTERN_ZONE)
+    clock_time = market_time.time().replace(tzinfo=None)
+    return market_time.weekday() < 5 and REGULAR_MARKET_OPEN <= clock_time < REGULAR_MARKET_CLOSE
 
 
 def post_discord_message(content: str) -> None:

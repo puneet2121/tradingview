@@ -143,6 +143,7 @@ def fetch_yfinance_history(symbol: str, timeframe: str) -> list[dict[str, float 
         interval=config["yf_interval"],
         progress=False,
         auto_adjust=False,
+        prepost=True,
         threads=False,
     )
     if frame.empty:
@@ -199,7 +200,7 @@ def fetch_yfinance_quote(symbol: str) -> dict[str, float | int | str | None]:
     import yfinance as yf
 
     ticker = yf.Ticker(symbol)
-    history = ticker.history(period="2d", interval="1m")
+    history = ticker.history(period="2d", interval="1m", prepost=True)
     if history.empty:
         return {"symbol": symbol, "price": None, "previous": None, "time": None}
 

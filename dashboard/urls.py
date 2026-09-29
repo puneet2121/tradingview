@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import pine_scripts, views
 
 urlpatterns = [
     path("", views.index, name="index"),
@@ -17,6 +17,10 @@ urlpatterns = [
     path("api/paper/watchlist/", views.paper_watchlist, name="paper_watchlist"),
     path("api/paper/scan/", views.paper_scan, name="paper_scan"),
     path("api/strategies/", views.strategies, name="strategies"),
+    path("api/pine/", pine_scripts.scripts, name="pine_scripts"),
+    path("api/pine/<int:script_id>/", pine_scripts.scripts, name="pine_script"),
+    path("api/pine/worker/", pine_scripts.worker, name="pine_worker"),
+    path("api/pine/trader-template/", pine_scripts.trader_template, name="pine_trader_template"),
     path("api/options/expirations/", views.option_expirations, name="option_expirations"),
     path("api/options/chain/", views.option_chain, name="option_chain"),
     path("api/options/paper/state/", views.option_paper_state, name="option_paper_state"),

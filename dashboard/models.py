@@ -3,6 +3,17 @@ from decimal import Decimal
 from django.db import models
 
 
+class PineIndicator(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    source = models.TextField()
+    overlay = models.BooleanField(default=True)
+    revision = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+
 class TradeActivity(models.Model):
     recorded_at = models.DateTimeField(auto_now_add=True, db_index=True)
     actor = models.CharField(max_length=16)

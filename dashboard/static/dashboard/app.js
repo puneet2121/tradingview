@@ -6,10 +6,28 @@ const DRAWINGS_STORAGE_KEY = "trading-dashboard-drawings";
 const PANE_LAYOUTS_STORAGE_KEY = "trading-dashboard-pane-layouts";
 const PAPER_ENABLED_STORAGE_KEY = "trading-dashboard-paper-enabled";
 const PAPER_STRATEGY = "testing1";
+const IMPULSIVE_STRATEGY = "impulsive";
 const APP_TIME_ZONE = "America/Los_Angeles";
+const IMPULSIVE_TIME_ZONE = "America/New_York";
+const IMPULSIVE_STRATEGY_NAME = "Impulsive Trader Auto B & S Signal";
+const IMPULSIVE_DEFAULTS = {
+  sessionStart: "03:30", sessionEnd: "09:30", signalStart: "09:30", cutoff: "16:00",
+  timeZone: IMPULSIVE_TIME_ZONE, rewardRisk: 4, regularHoursOnly: true,
+};
+const breakoutFormatters = new Map();
 const LOWER_PANE_DEFAULT_PERCENT = 38;
 const LOWER_PANE_MIN_PERCENT = 20;
 const LOWER_PANE_MAX_PERCENT = 72;
+const INITIAL_VISIBLE_BARS = 120;
+const CHART_RIGHT_OFFSET = 6;
+const FVG_MAX_ZONES = 20;
+const CHART_THEME_KEY = "trading-dashboard-chart-theme";
+const CHART_THEMES = {
+  light: { background: "#ffffff", text: "#454b57", grid: "#e9ebef", border: "#dfe3e8", crosshair: "#959ca7", pre: "#fff6e9", post: "#edf2ff" },
+  dark: { background: "#151719", text: "#b9bec7", grid: "#25282d", border: "#34383f", crosshair: "#747d8b", pre: "#25221c", post: "#1c2230" },
+};
+let chartTheme = localStorage.getItem(CHART_THEME_KEY) === "dark" ? "dark" : "light";
+document.documentElement.dataset.chartTheme = chartTheme;
 const TIME_LABEL_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: APP_TIME_ZONE,
   hour: "2-digit",
@@ -35,9 +53,12 @@ const INDICATORS = [
   { id: "ema", label: "EMA", target: "main", repeatable: true, defaults: { period: 20 } },
   { id: "vwap", label: "VWAP", target: "main" },
   { id: "testing1", label: "testing1 Buy/Sell", target: "main" },
+  { id: "impulsive", label: "Impulsive B/S", target: "main" },
   { id: "bb", label: "Bollinger Bands", target: "main" },
   { id: "volume", label: "Volume", target: "main" },
   { id: "supertrend", label: "Supertrend", target: "main" },
+  { id: "fvg", label: "Fair Value Gaps", target: "main" },
+  { id: "auto_sr", label: "Auto Support/Resistance", target: "main", defaults: { pivotStrength: 3, maxLevels: 3 } },
   { id: "rsi", label: "RSI", target: "lower", defaults: { period: 14, maPeriod: 14 } },
   { id: "macd", label: "MACD", target: "lower" },
   { id: "atr", label: "ATR 14", target: "lower" },
@@ -332,6 +353,7 @@ function createIndicatorSelect(index) {
     option.textContent = indicator.repeatable ? `${indicator.label}...` : indicator.label;
     select.append(option);
   });
+  PineScripts.appendOptions(select);
 
   return select;
 }
@@ -350,13 +372,14 @@ function applyFlash(pane, nextPrice) {
 }
 
 function setTicker(pane, symbol, price) {
-  pane.symbolEl.textContent = symbolLabel(symbol);
-  pane.priceEl.textContent = formatPrice(price);
+  pane.symbolEl.textContent = symbol;
+  pane.symbolEl.title = symbolLabel(symbol);
+  pane.priceEl.textContent = price == null ? "--" : pane.series.priceFormatter().format(price);
   applyFlash(pane, price);
 }
 
 function indicatorById(id) {
-  return INDICATORS.find((indicator) => indicator.id === id);
+  return INDICATORS.find((indicator) => indicator.id === id) || PineScripts.definition(id);
 }
 
 function buildPane(index) {
@@ -411,6 +434,31 @@ function buildPane(index) {
   const symbolSelect = makeSymbolSelect(pane.symbol, `Symbol for chart ${index + 1}`);
   const timeframeSelect = makeSelect(state.config.timeframes, pane.timeframe, `Timeframe for chart ${index + 1}`);
   const indicatorSelect = createIndicatorSelect(index);
+  const controls = document.createElement("div");
+  controls.className = "pane-controls";
+  const toolsMenu = document.createElement("details");
+  toolsMenu.className = "pane-tools-menu";
+  const toolsSummary = document.createElement("summary");
+  toolsSummary.textContent = "Tools";
+  toolsSummary.title = "Symbols, drawing tools and paper trading";
+  const toolsContent = document.createElement("div");
+  toolsContent.className = "pane-tools-content";
+  toolsMenu.append(toolsSummary, toolsContent);
+  const resetView = document.createElement("button");
+  resetView.type = "button";
+  resetView.className = "reset-chart-view";
+  resetView.textContent = "Reset view";
+  resetView.addEventListener("click", () => {
+    pane.chart.priceScale("right").applyOptions({ autoScale: true });
+    pane.lowerChart.priceScale("right").applyOptions({ autoScale: true });
+    showLatestBars(pane);
+    toolsMenu.open = false;
+  });
+  const readout = document.createElement("div");
+  readout.className = "pane-readout";
+  const ohlc = document.createElement("div");
+  ohlc.className = "ohlc-readout";
+  readout.append(ticker, ohlc);
   const chips = document.createElement("div");
   chips.className = "indicator-chips";
   const drawingTools = document.createElement("div");
@@ -470,8 +518,25 @@ function buildPane(index) {
   lowerChartEl.className = "chart lower-chart";
   chartShell.append(chartEl, lowerResizer, lowerChartEl);
 
-  header.append(ticker, symbolSelect, timeframeSelect, indicatorSelect, customForm, drawingTools, paperTools, chips);
-  root.append(header, chartShell);
+  toolsContent.append(customForm, drawingTools, paperTools, resetView);
+  controls.append(symbolSelect, timeframeSelect, indicatorSelect, toolsMenu);
+  header.append(controls, readout, chips);
+  const footer = document.createElement("div");
+  footer.className = "chart-footer";
+  const legend = document.createElement("div");
+  legend.className = "session-legend";
+  for (const [session, label] of [["pre", "Premarket"], ["regular", "Regular"], ["post", "After-hours"]]) {
+    const item = document.createElement("span");
+    item.className = `session-key session-${session}`;
+    item.textContent = label;
+    legend.append(item);
+  }
+  const timezoneLabel = document.createElement("span");
+  timezoneLabel.className = "chart-timezone";
+  timezoneLabel.textContent = "Pacific";
+  timezoneLabel.title = "America/Los_Angeles (PST/PDT)";
+  footer.append(legend, timezoneLabel);
+  root.append(header, chartShell, footer);
   grid.append(root);
 
   pane.root = root;
@@ -490,6 +555,9 @@ function buildPane(index) {
   pane.paperButton = paperButton;
   pane.paperStatus = paperStatus;
   pane.chips = chips;
+  pane.ohlc = ohlc;
+  pane.sessionLegend = legend;
+  pane.toolsMenu = toolsMenu;
   pane.chartShell = chartShell;
   pane.chartEl = chartEl;
   pane.lowerResizer = lowerResizer;
@@ -518,6 +586,17 @@ function buildPane(index) {
     event.preventDefault();
     await addCustomSymbol(pane);
   });
+  toolsMenu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      toolsMenu.open = false;
+      toolsSummary.focus();
+    }
+  });
+  toolsMenu.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!toolsMenu.contains(document.activeElement)) toolsMenu.open = false;
+    }, 0);
+  });
   supportButton.addEventListener("click", () => setDrawingMode(pane, "support"));
   resistanceButton.addEventListener("click", () => setDrawingMode(pane, "resistance"));
   paperButton.addEventListener("click", () => togglePaperTrading(pane));
@@ -532,22 +611,42 @@ function buildPane(index) {
   return pane;
 }
 
-function chartOptions(background) {
+function chartOptions() {
+  const theme = CHART_THEMES[chartTheme];
   return {
     autoSize: true,
-    layout: { background: { color: background }, textColor: "#c8d0cc" },
-    grid: { vertLines: { color: "#263036" }, horzLines: { color: "#263036" } },
+    handleScroll: {
+      mouseWheel: true,
+      pressedMouseMove: true,
+      horzTouchDrag: true,
+      vertTouchDrag: false,
+    },
+    handleScale: {
+      axisPressedMouseMove: true,
+      mouseWheel: true,
+      pinch: true,
+    },
+    layout: { background: { color: theme.background }, textColor: theme.text, fontSize: 11, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+    grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
     localization: {
       timeFormatter: formatChartDateTime,
     },
-    rightPriceScale: { borderColor: "#2a3338" },
+    rightPriceScale: { borderColor: theme.border, minimumWidth: 76, scaleMargins: { top: 0.08, bottom: 0.08 } },
     timeScale: {
-      borderColor: "#2a3338",
+      borderColor: theme.border,
+      rightOffset: CHART_RIGHT_OFFSET,
+      minBarSpacing: 0.5,
+      barSpacing: 8,
+      lockVisibleTimeRangeOnResize: true,
       timeVisible: true,
       secondsVisible: false,
       tickMarkFormatter: formatChartTick,
     },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: theme.crosshair, labelBackgroundColor: "#505968" },
+      horzLine: { color: theme.crosshair, labelBackgroundColor: "#505968" },
+    },
   };
 }
 
@@ -574,28 +673,111 @@ function formatChartDateTime(time) {
 }
 
 function initChart(pane) {
-  pane.chart = LightweightCharts.createChart(pane.chartEl, chartOptions("#1a1f22"));
+  pane.chart = LightweightCharts.createChart(pane.chartEl, chartOptions());
   pane.series = pane.chart.addCandlestickSeries({
-    upColor: "#12b886",
-    downColor: "#fa5252",
-    borderUpColor: "#12b886",
-    borderDownColor: "#fa5252",
-    wickUpColor: "#12b886",
-    wickDownColor: "#fa5252",
+    upColor: "#089981", downColor: "#f23645",
+    borderVisible: false,
+    wickUpColor: "#089981", wickDownColor: "#f23645",
+    priceLineWidth: 1,
   });
-
-  pane.lowerChart = LightweightCharts.createChart(pane.lowerChartEl, chartOptions("#171c1f"));
-  pane.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    if (range) {
-      pane.lowerChart.timeScale().setVisibleLogicalRange(range);
+  pane.sessionBackground = new ChartSessionBackground();
+  pane.series.attachPrimitive(pane.sessionBackground);
+  pane.lowerChart = LightweightCharts.createChart(pane.lowerChartEl, chartOptions());
+  // Keep matching bar indexes even before an oscillator finishes its warm-up.
+  pane.lowerTimeline = pane.lowerChart.addLineSeries({ visible: false, priceLineVisible: false, lastValueVisible: false });
+  pane.rangeSource = "main";
+  for (const [element, source] of [[pane.chartEl, "main"], [pane.lowerChartEl, "lower"]]) {
+    for (const event of ["pointerdown", "wheel", "touchstart"]) {
+      element.addEventListener(event, () => { pane.rangeSource = source; }, { capture: true, passive: true });
     }
+  }
+  pane.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (pane.rangeSource === "main") syncTimeScaleRange(pane, pane.lowerChart, range);
   });
   pane.lowerChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    if (range) {
-      pane.chart.timeScale().setVisibleLogicalRange(range);
+    if (pane.rangeSource === "lower" && pane.chartShell.classList.contains("has-lower-chart")) {
+      syncTimeScaleRange(pane, pane.chart, range);
     }
   });
   pane.chart.subscribeClick((param) => handleChartClick(pane, param));
+  pane.chart.subscribeCrosshairMove((param) => {
+    pane.crosshairTime = param.time === undefined ? null : param.time;
+    updateChartReadout(pane, param.seriesData.get(pane.series));
+  });
+}
+
+function hasUSSessionShading(pane) {
+  const config = state.config.symbols.find((item) => item.value === pane.symbol);
+  return config && config.provider === "yfinance" && ["US", "NASDAQ", "NYSE", "NYSE Arca"].includes(config.exchange)
+    && /^[A-Z][A-Z0-9-]*$/.test(pane.symbol) && /[mh]$/.test(pane.timeframe);
+}
+
+function updateSessionBackground(pane) {
+  const enabled = hasUSSessionShading(pane);
+  pane.sessionLegend.hidden = !enabled;
+  pane.sessionBackground.setData(enabled ? usSessionRanges(pane.bars) : [], CHART_THEMES[chartTheme]);
+}
+
+function updateChartReadout(pane, selectedBar) {
+  const bar = selectedBar || pane.bars[pane.bars.length - 1];
+  pane.ohlc.replaceChildren();
+  if (!bar || !Number.isFinite(bar.close)) return;
+  const priceFormat = pane.series.priceFormatter();
+  pane.ohlc.dataset.direction = bar.close >= bar.open ? "up" : "down";
+  for (const [label, key] of [["O", "open"], ["H", "high"], ["L", "low"], ["C", "close"]]) {
+    const field = document.createElement("span");
+    const caption = document.createElement("b");
+    caption.textContent = label;
+    field.append(caption, priceFormat.format(bar[key]));
+    pane.ohlc.append(field);
+  }
+  const fullBar = selectedBar ? pane.bars.find((item) => item.time === selectedBar.time) : bar;
+  const volume = document.createElement("span");
+  volume.className = "readout-volume";
+  volume.textContent = `Vol ${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format((fullBar && fullBar.volume) || 0)}`;
+  pane.ohlc.append(volume);
+  pane.ohlc.title = formatChartDateTime(bar.time);
+}
+
+function applyChartTheme(value) {
+  chartTheme = value === "dark" ? "dark" : "light";
+  localStorage.setItem(CHART_THEME_KEY, chartTheme);
+  document.documentElement.dataset.chartTheme = chartTheme;
+  for (const pane of state.panes) {
+    const theme = CHART_THEMES[chartTheme];
+    for (const chart of [pane.chart, pane.lowerChart]) {
+      chart.applyOptions({
+        layout: { background: { color: theme.background }, textColor: theme.text },
+        grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
+        rightPriceScale: { borderColor: theme.border }, timeScale: { borderColor: theme.border },
+        crosshair: { vertLine: { color: theme.crosshair }, horzLine: { color: theme.crosshair } },
+      });
+    }
+    updateSessionBackground(pane);
+  }
+}
+
+function logicalRangesMatch(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return Math.abs(left.from - right.from) < 0.001 && Math.abs(left.to - right.to) < 0.001;
+}
+
+function syncTimeScaleRange(pane, targetChart, range) {
+  if (!range || pane.syncingTimeScale) {
+    return;
+  }
+  const targetScale = targetChart.timeScale();
+  if (logicalRangesMatch(targetScale.getVisibleLogicalRange(), range)) {
+    return;
+  }
+  pane.syncingTimeScale = true;
+  try {
+    targetScale.setVisibleLogicalRange(range);
+  } finally {
+    pane.syncingTimeScale = false;
+  }
 }
 
 function setDrawingMode(pane, mode) {
@@ -603,6 +785,8 @@ function setDrawingMode(pane, mode) {
   pane.supportButton.classList.toggle("active", pane.drawingMode === "support");
   pane.resistanceButton.classList.toggle("active", pane.drawingMode === "resistance");
   pane.drawingHint.textContent = pane.drawingMode ? "Click chart" : "";
+  if (pane.drawingMode) pane.toolsMenu.open = false;
+  pane.chartEl.style.cursor = pane.drawingMode ? "crosshair" : "";
 }
 
 function handleChartClick(pane, param) {
@@ -985,6 +1169,10 @@ function renderStrategyState(payload) {
   } else {
     clearStrategyForm();
   }
+  state.panes.forEach((pane) => {
+    const indicator = pane.indicatorInstances.find((instance) => instance.type === IMPULSIVE_STRATEGY);
+    if (indicator) withPreservedVisibleRange(pane, () => updateIndicator(pane, indicator));
+  });
 }
 
 function latestStrategyError(strategyName) {
@@ -1486,25 +1674,17 @@ function getVisibleTimeRanges(pane) {
 }
 
 function restoreVisibleRanges(pane, ranges) {
-  window.requestAnimationFrame(() => {
-    if (ranges.main) {
-      pane.chart.timeScale().setVisibleLogicalRange(ranges.main);
-    }
-    if (ranges.lower) {
-      pane.lowerChart.timeScale().setVisibleLogicalRange(ranges.lower);
-    }
-  });
+  if (ranges.main && !pane.destroyed) {
+    pane.rangeSource = "main";
+    pane.chart.timeScale().setVisibleLogicalRange(ranges.main);
+    pane.lowerChart.timeScale().setVisibleLogicalRange(ranges.main);
+  }
 }
 
 function restoreVisibleTimeRanges(pane, ranges) {
-  window.requestAnimationFrame(() => {
-    if (ranges.main) {
-      pane.chart.timeScale().setVisibleRange(ranges.main);
-    }
-    if (ranges.lower) {
-      pane.lowerChart.timeScale().setVisibleRange(ranges.lower);
-    }
-  });
+  if (ranges.main) {
+    pane.chart.timeScale().setVisibleRange(ranges.main);
+  }
 }
 
 function withPreservedVisibleRange(pane, callback) {
@@ -1513,35 +1693,57 @@ function withPreservedVisibleRange(pane, callback) {
   restoreVisibleRanges(pane, ranges);
 }
 
-function withPreservedVisibleTimeRange(pane, callback) {
-  const ranges = getVisibleTimeRanges(pane);
-  callback();
-  restoreVisibleTimeRanges(pane, ranges);
+function showLatestBars(pane, barCount = INITIAL_VISIBLE_BARS) {
+  if (!pane.bars.length) {
+    return;
+  }
+  const lastIndex = pane.bars.length - 1;
+  pane.rangeSource = "main";
+  const readableCount = Math.min(barCount, Math.max(25, Math.floor(pane.chart.paneSize().width / 8)));
+  pane.chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(0, lastIndex - readableCount + 1),
+    to: lastIndex + CHART_RIGHT_OFFSET,
+  });
+}
+
+function isShowingLatestBar(pane) {
+  const range = pane.chart.timeScale().getVisibleLogicalRange();
+  return Boolean(range && pane.bars.length && range.to >= pane.bars.length - 2);
 }
 
 function setBars(pane, bars, options = {}) {
+  pane.rangeSource = "main";
   const shouldFit = Boolean(options.fit);
+  const wasShowingLatest = !shouldFit && isShowingLatestBar(pane);
+  const previousRange = pane.chart.timeScale().getVisibleLogicalRange();
+  const previousOffset = pane.chart.timeScale().scrollPosition();
+  const previousRanges = shouldFit || wasShowingLatest ? null : getVisibleTimeRanges(pane);
   const applyBars = () => {
     pane.bars = bars;
     pane.series.setData(bars);
+    pane.lowerTimeline.setData(bars.map((bar) => ({ time: bar.time })));
     updateIndicators(pane);
+    updateSessionBackground(pane);
+    updateChartReadout(pane);
     if (shouldFit && pane.paperEnabled) {
       seedPaperSignals(pane);
     }
   };
 
-  if (shouldFit) {
-    applyBars();
-  } else {
-    withPreservedVisibleTimeRange(pane, applyBars);
+  applyBars();
+
+  if (wasShowingLatest) {
+    const to = bars.length - 1 + previousOffset;
+    pane.chart.timeScale().setVisibleLogicalRange({ from: to - (previousRange.to - previousRange.from), to });
+  } else if (previousRanges) {
+    restoreVisibleTimeRanges(pane, previousRanges);
   }
 
   if (bars.length) {
     setTicker(pane, pane.symbol, bars[bars.length - 1].close);
     processPaperTrading(pane);
     if (shouldFit) {
-      pane.chart.timeScale().fitContent();
-      pane.lowerChart.timeScale().fitContent();
+      showLatestBars(pane);
     }
   } else {
     setTicker(pane, pane.symbol, null);
@@ -1549,20 +1751,20 @@ function setBars(pane, bars, options = {}) {
 }
 
 function updateBar(pane, bar) {
-  const ranges = getVisibleTimeRanges(pane);
   const last = pane.bars[pane.bars.length - 1];
+  if (last && bar.time < last.time) return;
+  pane.rangeSource = "main";
   if (last && last.time === bar.time) {
     pane.bars[pane.bars.length - 1] = bar;
   } else {
     pane.bars.push(bar);
-    if (pane.bars.length > 600) {
-      pane.bars.shift();
-    }
   }
   pane.series.update(bar);
+  pane.lowerTimeline.update({ time: bar.time });
   updateIndicators(pane);
+  updateSessionBackground(pane);
+  if (pane.crosshairTime == null) updateChartReadout(pane);
   processPaperTrading(pane);
-  restoreVisibleTimeRanges(pane, ranges);
   setTicker(pane, pane.symbol, bar.close);
 }
 
@@ -1611,6 +1813,7 @@ function startYfinanceFeed(pane) {
 
 async function startPaneFeed(pane) {
   stopPaneFeed(pane);
+  PineScripts.resetPane(pane);
   pane.lastPrice = null;
   pane.processedPaperSignals.clear();
   pane.symbolEl.textContent = symbolLabel(pane.symbol);
@@ -1652,6 +1855,10 @@ function addIndicator(pane, id) {
   if (!indicator.repeatable && pane.indicatorInstances.some((instance) => instance.type === id)) {
     return;
   }
+  if (PineScripts.isPine(id) && pane.indicatorInstances.filter((instance) => PineScripts.isPine(instance.type)).length >= 4) {
+    window.alert("Use no more than four Pine indicators per chart.");
+    return;
+  }
 
   const instance = makeIndicatorInstance(pane, id);
   if (!instance) {
@@ -1666,6 +1873,7 @@ function addIndicator(pane, id) {
   renderIndicatorChips(pane);
   updateLowerChartVisibility(pane);
   updateIndicator(pane, instance);
+  updatePriceMargins(pane);
   savePaneLayouts();
   restoreVisibleRanges(pane, ranges);
 }
@@ -1673,6 +1881,8 @@ function addIndicator(pane, id) {
 function restorePaneIndicators(pane) {
   const layout = savedPaneLayout(pane.index);
   if (!layout || !Array.isArray(layout.indicators)) {
+    pane.indicatorInstances.push(makeIndicatorInstance(pane, "volume"));
+    renderIndicatorChips(pane);
     return;
   }
 
@@ -1699,6 +1909,32 @@ function restorePaneIndicators(pane) {
 }
 
 function editIndicatorParams(instance, isNew = false) {
+  if (instance.type === "auto_sr") {
+    const strengthInput = window.prompt("Pivot strength (2-10 candles per side)", String(instance.params.pivotStrength || 3));
+    if (strengthInput === null) {
+      return !isNew;
+    }
+    const pivotStrength = Number.parseInt(strengthInput, 10);
+    if (!Number.isInteger(pivotStrength) || pivotStrength < 2 || pivotStrength > 10) {
+      window.alert("Use a pivot strength from 2 to 10.");
+      return editIndicatorParams(instance, isNew);
+    }
+
+    const levelsInput = window.prompt("Support and resistance levels per side (1-5)", String(instance.params.maxLevels || 3));
+    if (levelsInput === null) {
+      return !isNew;
+    }
+    const maxLevels = Number.parseInt(levelsInput, 10);
+    if (!Number.isInteger(maxLevels) || maxLevels < 1 || maxLevels > 5) {
+      window.alert("Use 1 to 5 levels per side.");
+      return editIndicatorParams(instance, isNew);
+    }
+
+    instance.params.pivotStrength = pivotStrength;
+    instance.params.maxLevels = maxLevels;
+    return true;
+  }
+
   if (instance.type !== "sma" && instance.type !== "ema" && instance.type !== "rsi") {
     return true;
   }
@@ -1733,6 +1969,10 @@ function editIndicatorParams(instance, isNew = false) {
 function editIndicator(pane, uid) {
   const ranges = getVisibleRanges(pane);
   const instance = pane.indicatorInstances.find((item) => item.uid === uid);
+  if (instance && PineScripts.isPine(instance.type)) {
+    PineScripts.open(Number(instance.type.slice(5)), pane.index);
+    return;
+  }
   if (!instance || !editIndicatorParams(instance)) {
     return;
   }
@@ -1743,9 +1983,12 @@ function editIndicator(pane, uid) {
 }
 
 function removeIndicator(pane, uid) {
+  const removed = pane.indicatorInstances.find((item) => item.uid === uid);
+  if (removed) PineScripts.cancel(removed);
   const ranges = getVisibleRanges(pane);
   pane.indicatorInstances = pane.indicatorInstances.filter((instance) => instance.uid !== uid);
   removeIndicatorSeries(pane, uid);
+  updatePriceMargins(pane);
   renderIndicatorChips(pane);
   updateLowerChartVisibility(pane);
   savePaneLayouts();
@@ -1760,6 +2003,9 @@ function indicatorInstanceLabel(instance) {
   if (instance.type === "rsi") {
     return `RSI ${instance.params.period}`;
   }
+  if (instance.type === "auto_sr") {
+    return `Auto S/R ${instance.params.pivotStrength}/${instance.params.maxLevels}`;
+  }
   return indicator.label;
 }
 
@@ -1773,7 +2019,11 @@ function renderIndicatorChips(pane) {
     label.className = "indicator-chip-label";
     label.type = "button";
     label.textContent = indicatorInstanceLabel(instance);
-    label.title = `Edit ${indicatorInstanceLabel(instance)}`;
+    label.title = instance.pineError || `Edit ${indicatorInstanceLabel(instance)}`;
+    if (instance.pineError) {
+      label.textContent += " !";
+      chip.classList.add("indicator-error");
+    }
     label.addEventListener("click", () => editIndicator(pane, instance.uid));
 
     const remove = document.createElement("button");
@@ -1789,8 +2039,10 @@ function renderIndicatorChips(pane) {
 }
 
 function updateLowerChartVisibility(pane) {
+  pane.rangeSource = "main";
   const hasLowerIndicator = pane.indicatorInstances.some((instance) => indicatorById(instance.type).target === "lower");
   pane.chartShell.classList.toggle("has-lower-chart", hasLowerIndicator);
+  pane.chart.applyOptions({ timeScale: { visible: !hasLowerIndicator } });
   applyLowerPaneSize(pane);
 }
 
@@ -1836,6 +2088,7 @@ function startLowerPaneResize(pane, event) {
 }
 
 function removeIndicatorSeries(pane, uid) {
+  PineScripts.clearVisuals(pane, uid);
   const entries = pane.indicatorSeries.get(uid) || [];
   entries.forEach(({ chart, series }) => chart.removeSeries(series));
   pane.indicatorSeries.delete(uid);
@@ -1843,9 +2096,25 @@ function removeIndicatorSeries(pane, uid) {
   applyIndicatorMarkers(pane);
 }
 
-function replaceIndicatorSeries(pane, instance, entries) {
+function ensureIndicatorSeries(pane, instance, definitions) {
+  const existing = pane.indicatorSeries.get(instance.uid);
+  const canReuse =
+    existing &&
+    existing.length === definitions.length &&
+    existing.every((entry, index) => entry.chart === definitions[index].chart);
+
+  if (canReuse) {
+    return { created: false, series: existing.map((entry) => entry.series) };
+  }
+
   removeIndicatorSeries(pane, instance.uid);
+  const entries = definitions.map((definition) => ({
+    chart: definition.chart,
+    series: definition.create(),
+  }));
+  entries.forEach(({ series }) => series.applyOptions({ priceLineVisible: false }));
   pane.indicatorSeries.set(instance.uid, entries);
+  return { created: true, series: entries.map((entry) => entry.series) };
 }
 
 function replaceIndicatorMarkers(pane, instance, markers) {
@@ -1862,9 +2131,19 @@ function applyIndicatorMarkers(pane) {
 
 function updateIndicators(pane) {
   pane.indicatorInstances.forEach((instance) => updateIndicator(pane, instance));
+  updatePriceMargins(pane);
+}
+
+function updatePriceMargins(pane) {
+  const hasVolume = pane.indicatorInstances.some((instance) => instance.type === "volume");
+  pane.chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.08, bottom: hasVolume ? 0.23 : 0.08 } });
 }
 
 function updateIndicator(pane, instance) {
+  if (PineScripts.isPine(instance.type)) {
+    PineScripts.update(pane, instance);
+    return;
+  }
   const updater = indicatorUpdaters[instance.type];
   if (updater) {
     updater(pane, instance);
@@ -1988,6 +2267,139 @@ function calculateTesting1Signals(bars, symbol) {
   }
 
   return { ema, vwap, signals };
+}
+
+function calculateImpulsiveSignals(bars, timeframe = "5m", settings = IMPULSIVE_DEFAULTS, now = Date.now() / 1000) {
+  const interval = /^(\d+)([mh])$/.exec(timeframe);
+  if (!settings || !interval) return { signals: [] };
+  const barSeconds = Number(interval[1]) * (interval[2] === "m" ? 60 : 3600);
+  const minutes = (value) => {
+    const [hour, minute] = value.split(":").map(Number);
+    return hour * 60 + minute;
+  };
+  const sessionStart = minutes(settings.sessionStart);
+  const sessionEnd = minutes(settings.sessionEnd);
+  const signalStart = minutes(settings.signalStart || settings.sessionEnd);
+  const cutoff = minutes(settings.cutoff);
+  const rewardRisk = settings.rewardRisk;
+  if (!breakoutFormatters.has(settings.timeZone)) {
+    breakoutFormatters.set(settings.timeZone, new Intl.DateTimeFormat("en-US", {
+      timeZone: settings.timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short", hourCycle: "h23",
+    }));
+  }
+  const formatter = breakoutFormatters.get(settings.timeZone);
+  let sessHigh = null;
+  let sessLow = null;
+  let lockedHigh = null;
+  let lockedLow = null;
+  let signalTakenToday = false;
+  let sessionDate = null;
+  let previousClose = null;
+  let activeTrade = null;
+  const signals = [];
+
+  bars.forEach((bar) => {
+    if (bar.time + barSeconds > now) return;
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(bar.time * 1000)).map((part) => [part.type, part.value]));
+    const date = `${parts.year}-${parts.month}-${parts.day}`;
+    if (date !== sessionDate) {
+      sessionDate = date;
+      sessHigh = sessLow = lockedHigh = lockedLow = previousClose = activeTrade = null;
+      signalTakenToday = false;
+    }
+    if (settings.regularHoursOnly && (parts.weekday === "Sat" || parts.weekday === "Sun")) return;
+    const minute = Number(parts.hour) * 60 + Number(parts.minute);
+    const inSession = minute >= sessionStart && minute < sessionEnd;
+    const withinAllowedTime = minute >= signalStart && minute < cutoff && minute * 60 + Number(parts.second) + barSeconds <= cutoff * 60;
+    const sessionEnds = minute * 60 + Number(parts.second) + barSeconds >= cutoff * 60;
+
+    if (inSession && minute * 60 + Number(parts.second) + barSeconds <= sessionEnd * 60) {
+      if (sessHigh === null) {
+        sessHigh = bar.high;
+        sessLow = bar.low;
+      } else {
+        sessHigh = Math.max(sessHigh, bar.high);
+        sessLow = Math.min(sessLow, bar.low);
+      }
+    } else if (minute >= sessionEnd && sessHigh !== null && lockedHigh === null) {
+      lockedHigh = sessHigh;
+      lockedLow = sessLow;
+    }
+
+    if (!withinAllowedTime) activeTrade = null;
+    // Only an already-open signal can exit on this candle.
+    if (activeTrade && withinAllowedTime) {
+      const buy = activeTrade.side === "BUY";
+      const takeProfit = buy ? bar.close >= activeTrade.targetPrice : bar.close <= activeTrade.targetPrice;
+      const stopLoss = buy ? bar.close <= activeTrade.stopPrice : bar.close >= activeTrade.stopPrice;
+      if (takeProfit || stopLoss) {
+        const above = takeProfit ? buy : !buy;
+        signals.push({
+          time: bar.time, position: above ? "aboveBar" : "belowBar",
+          color: takeProfit ? "#2fce72" : "#f23d4f", shape: buy === takeProfit ? "arrowUp" : "arrowDown",
+          text: `${takeProfit ? "TP" : "SL"} ${formatPrice(takeProfit ? activeTrade.targetPrice : activeTrade.stopPrice)}`,
+        });
+        activeTrade = null;
+      }
+    }
+
+    if (
+      previousClose !== null &&
+      withinAllowedTime &&
+      !sessionEnds &&
+      !inSession &&
+      lockedHigh !== null &&
+      lockedLow !== null &&
+      !signalTakenToday
+    ) {
+      const risk = lockedHigh - lockedLow;
+      if (risk > 0 && previousClose <= lockedHigh && bar.close > lockedHigh) {
+        const stopPrice = lockedLow;
+        const targetPrice = settings.regularHoursOnly ? bar.close + (bar.close - stopPrice) * rewardRisk : lockedHigh + risk * rewardRisk;
+        signals.push({
+          time: bar.time,
+          position: "belowBar",
+          color: "#2fce72",
+          shape: "arrowUp",
+          text: "BUY",
+          side: "BUY",
+          stopPrice,
+          targetPrice,
+        });
+        activeTrade = { side: "BUY", stopPrice, targetPrice };
+        signalTakenToday = true;
+      } else if (risk > 0 && previousClose >= lockedLow && bar.close < lockedLow) {
+        const stopPrice = lockedHigh;
+        const targetPrice = settings.regularHoursOnly ? bar.close - (stopPrice - bar.close) * rewardRisk : lockedLow - risk * rewardRisk;
+        if (targetPrice <= 0) {
+          previousClose = bar.close;
+          return;
+        }
+        signals.push({
+          time: bar.time,
+          position: "aboveBar",
+          color: "#f23d4f",
+          shape: "arrowDown",
+          text: "SELL",
+          side: "SELL",
+          stopPrice,
+          targetPrice,
+        });
+        activeTrade = { side: "SELL", stopPrice, targetPrice };
+        signalTakenToday = true;
+      }
+    }
+
+    if (activeTrade && sessionEnds) {
+      signals.push({ time: bar.time, position: "aboveBar", color: "#868e96", shape: "square", text: "END" });
+      activeTrade = null;
+    }
+
+    previousClose = bar.close;
+  });
+
+  return { signals };
 }
 
 function calculateBollingerBands(bars, period = 20, deviations = 2) {
@@ -2121,70 +2533,276 @@ function calculateSupertrend(bars, period = 10, multiplier = 3) {
   return { values, directions };
 }
 
+function calculateAutoSupportResistance(bars, pivotStrength = 3, maxLevels = 3) {
+  if (bars.length < pivotStrength * 2 + 1) {
+    return [];
+  }
+
+  const atrValues = calculateAtr(bars);
+  const latestAtr = [...atrValues].reverse().find((value) => value !== null) || 0;
+  const latestPrice = bars[bars.length - 1].close;
+  const clusterTolerance = Math.max(latestPrice * 0.0015, latestAtr * 0.35);
+  const maximumDistance = Math.max(latestPrice * 0.06, latestAtr * 8);
+  const pivots = [];
+
+  for (let index = pivotStrength; index < bars.length - pivotStrength; index += 1) {
+    const candidate = bars[index];
+    const windowBars = bars.slice(index - pivotStrength, index + pivotStrength + 1);
+    const isSwingHigh =
+      candidate.high === Math.max(...windowBars.map((bar) => bar.high)) &&
+      candidate.high > bars[index - 1].high &&
+      candidate.high > bars[index + 1].high;
+    const isSwingLow =
+      candidate.low === Math.min(...windowBars.map((bar) => bar.low)) &&
+      candidate.low < bars[index - 1].low &&
+      candidate.low < bars[index + 1].low;
+
+    if (isSwingHigh) {
+      pivots.push({ index, price: candidate.high });
+    }
+    if (isSwingLow) {
+      pivots.push({ index, price: candidate.low });
+    }
+  }
+
+  const clusters = [];
+  pivots.forEach((pivot) => {
+    let cluster = clusters
+      .filter((item) => Math.abs(item.price - pivot.price) <= clusterTolerance)
+      .sort((left, right) => Math.abs(left.price - pivot.price) - Math.abs(right.price - pivot.price))[0];
+
+    if (!cluster) {
+      cluster = {
+        price: pivot.price,
+        touches: 0,
+        firstIndex: pivot.index,
+        lastIndex: pivot.index,
+      };
+      clusters.push(cluster);
+    }
+
+    cluster.price = (cluster.price * cluster.touches + pivot.price) / (cluster.touches + 1);
+    cluster.touches += 1;
+    cluster.firstIndex = Math.min(cluster.firstIndex, pivot.index);
+    cluster.lastIndex = Math.max(cluster.lastIndex, pivot.index);
+  });
+
+  const candidates = clusters
+    .filter((cluster) => Math.abs(cluster.price - latestPrice) <= maximumDistance)
+    .map((cluster) => {
+      const role = cluster.price <= latestPrice ? "support" : "resistance";
+      const recency = cluster.lastIndex / bars.length;
+      const distance = Math.abs(cluster.price - latestPrice) / latestPrice;
+      return {
+        ...cluster,
+        role,
+        score: cluster.touches * 4 + recency * 2 - distance * 100,
+      };
+    });
+
+  const strongest = (role) =>
+    candidates
+      .filter((level) => level.role === role)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, maxLevels);
+
+  return [...strongest("support"), ...strongest("resistance")];
+}
+
+function autoLevelOptions(level) {
+  const support = level.role === "support";
+  const color = support ? "#12b886" : "#fa5252";
+  return {
+    autoscaleInfoProvider: () => null,
+    color,
+    crosshairMarkerVisible: false,
+    lastValueVisible: true,
+    lineStyle: LightweightCharts.LineStyle.Solid,
+    lineWidth: Math.min(3, 1 + Math.floor(level.touches / 2)),
+    priceLineVisible: false,
+    title: `${support ? "Support" : "Resistance"} ${level.touches}x`,
+  };
+}
+
+function calculateFairValueGaps(bars, limit = FVG_MAX_ZONES) {
+  const gaps = [];
+
+  for (let index = 2; index < bars.length; index += 1) {
+    const first = bars[index - 2];
+    const third = bars[index];
+    let gap = null;
+
+    if (third.low > first.high) {
+      gap = {
+        direction: "bullish",
+        lower: first.high,
+        upper: third.low,
+        startIndex: index - 2,
+      };
+    } else if (third.high < first.low) {
+      gap = {
+        direction: "bearish",
+        lower: third.high,
+        upper: first.low,
+        startIndex: index - 2,
+      };
+    }
+
+    if (!gap) {
+      continue;
+    }
+
+    gap.endIndex = bars.length - 1;
+    gap.filled = false;
+    for (let checkIndex = index + 1; checkIndex < bars.length; checkIndex += 1) {
+      const checkBar = bars[checkIndex];
+      const fullyFilled =
+        gap.direction === "bullish"
+          ? checkBar.low <= gap.lower
+          : checkBar.high >= gap.upper;
+      if (fullyFilled) {
+        gap.endIndex = checkIndex;
+        gap.filled = true;
+        break;
+      }
+    }
+
+    gaps.push(gap);
+  }
+
+  return gaps.slice(-limit);
+}
+
+function fairValueGapOptions(gap) {
+  const bullish = gap.direction === "bullish";
+  const fillOpacity = gap.filled ? 0.07 : 0.18;
+  const edgeOpacity = gap.filled ? 0.28 : 0.72;
+  const rgb = bullish ? "18, 184, 134" : "250, 82, 82";
+
+  return {
+    autoscaleInfoProvider: () => null,
+    baseValue: { type: "price", price: gap.lower },
+    topFillColor1: `rgba(${rgb}, ${fillOpacity})`,
+    topFillColor2: `rgba(${rgb}, ${fillOpacity})`,
+    topLineColor: `rgba(${rgb}, ${edgeOpacity})`,
+    bottomFillColor1: "rgba(0, 0, 0, 0)",
+    bottomFillColor2: "rgba(0, 0, 0, 0)",
+    bottomLineColor: "rgba(0, 0, 0, 0)",
+    baseLineVisible: false,
+    crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+    lineWidth: 1,
+    title: bullish ? "Bullish FVG" : "Bearish FVG",
+  };
+}
+
 const indicatorUpdaters = {
   sma(pane, instance) {
     const period = instance.params.period;
-    const series = pane.chart.addLineSeries({ color: instance.color, lineWidth: 2, title: `SMA ${period}` });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: instance.color, lineWidth: 2, title: `SMA ${period}` }),
+      },
+    ]);
+    series.applyOptions({ color: instance.color, title: `SMA ${period}` });
     series.setData(linePoints(pane.bars, calculateSma(pane.bars, period)));
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.chart, series }]);
   },
   ema(pane, instance) {
     const period = instance.params.period;
-    const series = pane.chart.addLineSeries({ color: instance.color, lineWidth: 2, title: `EMA ${period}` });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: instance.color, lineWidth: 2, title: `EMA ${period}` }),
+      },
+    ]);
+    series.applyOptions({ color: instance.color, title: `EMA ${period}` });
     series.setData(linePoints(pane.bars, calculateEma(pane.bars, period)));
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.chart, series }]);
   },
   vwap(pane, instance) {
-    const series = pane.chart.addLineSeries({ color: "#2962ff", lineWidth: 2, title: "VWAP Session" });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#2962ff", lineWidth: 2, title: "VWAP Session" }),
+      },
+    ]);
     series.setData(linePoints(pane.bars, calculateVwap(pane.bars, pane.symbol)));
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.chart, series }]);
   },
   testing1(pane, instance) {
     const result = calculateTesting1Signals(pane.bars, pane.symbol);
-    const emaSeries = pane.chart.addLineSeries({ color: "#f6b51d", lineWidth: 2, title: "testing1 9 EMA" });
-    const vwapSeries = pane.chart.addLineSeries({ color: "#4dabf7", lineWidth: 2, title: "testing1 VWAP Session" });
+    const { series: [emaSeries, vwapSeries] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#f6b51d", lineWidth: 2, title: "testing1 9 EMA" }),
+      },
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#4dabf7", lineWidth: 2, title: "testing1 VWAP Session" }),
+      },
+    ]);
     emaSeries.setData(linePoints(pane.bars, result.ema));
     vwapSeries.setData(linePoints(pane.bars, result.vwap));
-    replaceIndicatorSeries(pane, instance, [
-      { chart: pane.chart, series: emaSeries },
-      { chart: pane.chart, series: vwapSeries },
-    ]);
+    replaceIndicatorMarkers(pane, instance, result.signals);
+  },
+  impulsive(pane, instance) {
+    const strategies = (state.strategies && state.strategies.strategies) || [];
+    const strategy = strategies.find((item) => item.name === IMPULSIVE_STRATEGY_NAME);
+    const settings = strategy ? strategy.chart_settings || null : IMPULSIVE_DEFAULTS;
+    const result = calculateImpulsiveSignals(pane.bars, pane.timeframe, settings);
+    ensureIndicatorSeries(pane, instance, []);
     replaceIndicatorMarkers(pane, instance, result.signals);
   },
   bb(pane, instance) {
     const bands = calculateBollingerBands(pane.bars);
-    const upper = pane.chart.addLineSeries({ color: "#adb5bd", lineWidth: 1, title: "BB Upper" });
-    const middle = pane.chart.addLineSeries({ color: "#868e96", lineWidth: 1, title: "BB Mid" });
-    const lower = pane.chart.addLineSeries({ color: "#adb5bd", lineWidth: 1, title: "BB Lower" });
+    const { series: [upper, middle, lower] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#adb5bd", lineWidth: 1, title: "BB Upper" }),
+      },
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#868e96", lineWidth: 1, title: "BB Mid" }),
+      },
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#adb5bd", lineWidth: 1, title: "BB Lower" }),
+      },
+    ]);
     upper.setData(bands.map((band, index) => (band ? { time: pane.bars[index].time, value: band.upper } : null)).filter(Boolean));
     middle.setData(bands.map((band, index) => (band ? { time: pane.bars[index].time, value: band.middle } : null)).filter(Boolean));
     lower.setData(bands.map((band, index) => (band ? { time: pane.bars[index].time, value: band.lower } : null)).filter(Boolean));
-    replaceIndicatorSeries(pane, instance, [
-      { chart: pane.chart, series: upper },
-      { chart: pane.chart, series: middle },
-      { chart: pane.chart, series: lower },
-    ]);
   },
   volume(pane, instance) {
-    const series = pane.chart.addHistogramSeries({
-      color: "#495057",
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-      title: "Volume",
-    });
-    pane.chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addHistogramSeries({
+          color: "#495057",
+          priceFormat: { type: "volume" },
+          priceScaleId: "volume",
+          title: "",
+          lastValueVisible: false,
+        }),
+      },
+    ]);
+    pane.chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     series.setData(
       pane.bars.map((bar) => ({
         time: bar.time,
         value: bar.volume || 0,
-        color: bar.close >= bar.open ? "rgba(18, 184, 134, 0.32)" : "rgba(250, 82, 82, 0.32)",
+        color: bar.close >= bar.open ? "rgba(8, 153, 129, 0.32)" : "rgba(242, 54, 69, 0.32)",
       })),
     );
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.chart, series }]);
   },
   supertrend(pane, instance) {
     const result = calculateSupertrend(pane.bars);
-    const series = pane.chart.addLineSeries({ color: "#20c997", lineWidth: 2, title: "Supertrend" });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.chart,
+        create: () => pane.chart.addLineSeries({ color: "#20c997", lineWidth: 2, title: "Supertrend" }),
+      },
+    ]);
     series.setData(
       result.values
         .map((value, index) =>
@@ -2198,7 +2816,47 @@ const indicatorUpdaters = {
         )
         .filter(Boolean),
     );
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.chart, series }]);
+  },
+  auto_sr(pane, instance) {
+    const pivotStrength = instance.params.pivotStrength || 3;
+    const maxLevels = instance.params.maxLevels || 3;
+    const levels = calculateAutoSupportResistance(pane.bars, pivotStrength, maxLevels);
+    const definitions = levels.map((level) => ({
+      chart: pane.chart,
+      create: () => pane.chart.addLineSeries(autoLevelOptions(level)),
+    }));
+    const { series } = ensureIndicatorSeries(pane, instance, definitions);
+    const lastTime = pane.bars.length ? pane.bars[pane.bars.length - 1].time : null;
+
+    series.forEach((levelSeries, index) => {
+      const level = levels[index];
+      levelSeries.applyOptions(autoLevelOptions(level));
+      levelSeries.setData(
+        lastTime === null
+          ? []
+          : [
+              { time: pane.bars[level.firstIndex].time, value: level.price },
+              { time: lastTime, value: level.price },
+            ],
+      );
+    });
+  },
+  fvg(pane, instance) {
+    const gaps = calculateFairValueGaps(pane.bars);
+    const definitions = gaps.map((gap) => ({
+      chart: pane.chart,
+      create: () => pane.chart.addBaselineSeries(fairValueGapOptions(gap)),
+    }));
+    const { series } = ensureIndicatorSeries(pane, instance, definitions);
+
+    series.forEach((gapSeries, index) => {
+      const gap = gaps[index];
+      gapSeries.applyOptions(fairValueGapOptions(gap));
+      gapSeries.setData([
+        { time: pane.bars[gap.startIndex].time, value: gap.upper },
+        { time: pane.bars[gap.endIndex].time, value: gap.upper },
+      ]);
+    });
   },
   rsi(pane, instance) {
     const period = instance.params.period || 14;
@@ -2211,54 +2869,60 @@ const indicatorUpdaters = {
     });
     const rsiValues = calculateRsi(pane.bars, period);
     const maValues = calculateSmaValues(rsiValues, maPeriod);
-    const series = pane.lowerChart.addLineSeries({
-      color: "#8e63d7",
-      lineWidth: 2,
-      title: `RSI ${period} close`,
-      autoscaleInfoProvider,
-    });
-    const maSeries = pane.lowerChart.addLineSeries({
-      color: "#ffd43b",
-      lineWidth: 2,
-      title: `RSI-based SMA ${maPeriod}`,
-      autoscaleInfoProvider,
-    });
+    const result = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addLineSeries({
+          color: "#8e63d7",
+          lineWidth: 2,
+          title: "",
+          autoscaleInfoProvider,
+        }),
+      },
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addLineSeries({
+          color: "#c99a00",
+          lineWidth: 2,
+          title: "",
+          autoscaleInfoProvider,
+        }),
+      },
+    ]);
+    const [series, maSeries] = result.series;
+    series.applyOptions({ title: "", autoscaleInfoProvider });
+    maSeries.applyOptions({ title: "", autoscaleInfoProvider });
     series.setData(linePoints(pane.bars, rsiValues));
     maSeries.setData(linePoints(pane.bars, maValues));
-    series.createPriceLine({
-      price: 70,
-      color: "#8b949e",
-      lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: "70",
-    });
-    series.createPriceLine({
-      price: 50,
-      color: "#616b76",
-      lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: "50",
-    });
-    series.createPriceLine({
-      price: 30,
-      color: "#8b949e",
-      lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: "30",
-    });
-    replaceIndicatorSeries(pane, instance, [
-      { chart: pane.lowerChart, series },
-      { chart: pane.lowerChart, series: maSeries },
-    ]);
+    if (result.created) {
+      [70, 50, 30].forEach((price) => {
+        series.createPriceLine({
+          price,
+          color: price === 50 ? "#616b76" : "#8b949e",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: false,
+          title: "",
+        });
+      });
+    }
   },
   macd(pane, instance) {
     const result = calculateMacd(pane.bars);
-    const macd = pane.lowerChart.addLineSeries({ color: "#4dabf7", lineWidth: 2, title: "MACD" });
-    const signal = pane.lowerChart.addLineSeries({ color: "#f06595", lineWidth: 2, title: "Signal" });
-    const histogram = pane.lowerChart.addHistogramSeries({ color: "#868e96", title: "MACD Hist" });
+    const { series: [macd, signal, histogram] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addLineSeries({ color: "#4dabf7", lineWidth: 2, title: "MACD" }),
+      },
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addLineSeries({ color: "#f06595", lineWidth: 2, title: "Signal" }),
+      },
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addHistogramSeries({ color: "#868e96", title: "MACD Hist" }),
+      },
+    ]);
     macd.setData(linePoints(pane.bars, result.macd));
     signal.setData(linePoints(pane.bars, result.signal));
     histogram.setData(
@@ -2274,20 +2938,21 @@ const indicatorUpdaters = {
         )
         .filter(Boolean),
     );
-    replaceIndicatorSeries(pane, instance, [
-      { chart: pane.lowerChart, series: macd },
-      { chart: pane.lowerChart, series: signal },
-      { chart: pane.lowerChart, series: histogram },
-    ]);
   },
   atr(pane, instance) {
-    const series = pane.lowerChart.addLineSeries({ color: "#ff922b", lineWidth: 2, title: "ATR 14" });
+    const { series: [series] } = ensureIndicatorSeries(pane, instance, [
+      {
+        chart: pane.lowerChart,
+        create: () => pane.lowerChart.addLineSeries({ color: "#ff922b", lineWidth: 2, title: "ATR 14" }),
+      },
+    ]);
     series.setData(linePoints(pane.bars, calculateAtr(pane.bars)));
-    replaceIndicatorSeries(pane, instance, [{ chart: pane.lowerChart, series }]);
   },
 };
 
 function destroyPane(pane) {
+  pane.destroyed = true;
+  pane.indicatorInstances.forEach(PineScripts.cancel);
   stopPaneFeed(pane);
   window.clearTimeout(pane.flashTimer);
   if (pane.chart) {
@@ -2314,6 +2979,13 @@ function renderGrid(count) {
 }
 
 async function boot() {
+  const themeSelect = document.querySelector("#chart-theme");
+  themeSelect.value = chartTheme;
+  themeSelect.addEventListener("change", () => applyChartTheme(themeSelect.value));
+  const topbar = document.querySelector(".topbar");
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--topbar-height", `${topbar.offsetHeight}px`);
+  }).observe(topbar);
   document.querySelectorAll("[data-open-activity]").forEach((button) => {
     button.addEventListener("click", () => {
       activityDrawer.hidden = false;
@@ -2328,6 +3000,7 @@ async function boot() {
   }, 10000);
   const response = await fetch("/api/config/");
   state.config = await response.json();
+  await PineScripts.load();
   loadCustomSymbols();
   await syncPaperState();
   await syncStrategyState();

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 import re
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from django.db import transaction
+from django.utils import timezone
 
 from .models import Strategy, StrategyScanState
 
@@ -18,6 +21,17 @@ AND close > previous close
 BUY PUT WHEN EMA(9) crosses below VWAP
 AND volume is increasing
 AND close < previous close"""
+IMPULSIVE_STRATEGY_NAME = "Impulsive Trader Auto B & S Signal"
+LEGACY_IMPULSIVE_STRATEGY_RULE_TEXT = """ASIA SESSION BREAKOUT
+SESSION 00:00-06:00 America/New_York
+SIGNALS UNTIL 19:30 America/New_York
+REWARD:RISK 4:1
+ONE SIGNAL PER SESSION"""
+IMPULSIVE_STRATEGY_RULE_TEXT = """US PREMARKET BREAKOUT
+SESSION 03:30-09:30 America/New_York
+SIGNALS 09:30-16:00 America/New_York
+REWARD:RISK 4:1
+ONE SIGNAL PER SESSION"""
 
 
 @dataclass(frozen=True)
@@ -31,6 +45,14 @@ class SignalRule:
 @dataclass(frozen=True)
 class ParsedStrategy:
     rules: tuple[SignalRule, ...]
+    strategy_type: str = "ema_vwap"
+    session_start: str = "00:00"
+    session_end: str = "06:00"
+    cutoff: str = "19:30"
+    timezone: str = "America/New_York"
+    reward_risk_ratio: Decimal = Decimal("4")
+    signal_start: str | None = None
+    regular_hours_only: bool = False
 
 
 class StrategyValidationError(ValueError):
@@ -42,6 +64,10 @@ CROSS_PATTERN = re.compile(
     rf"(buy call|buy put|buy|sell)\s+when\s+({INDICATOR_PATTERN})"
     rf"\s+cross(?:es|ing)?\s+(above|over|up|below|under|down)\s+({INDICATOR_PATTERN})"
 )
+SESSION_PATTERN = re.compile(r"session\s+(\d{2}:\d{2})-(\d{2}:\d{2})\s+([a-z_]+/[a-z_]+)")
+CUTOFF_PATTERN = re.compile(r"signals until\s+(\d{2}:\d{2})\s+([a-z_]+/[a-z_]+)")
+SIGNAL_SESSION_PATTERN = re.compile(r"signals\s+(\d{2}:\d{2})-(\d{2}:\d{2})\s+([a-z_]+/[a-z_]+)")
+REWARD_RISK_PATTERN = re.compile(r"reward\s*:\s*risk\s+(\d+(?:\.\d+)?)\s*:\s*1")
 
 
 def rule_error(line_number: int, message: str):
@@ -51,6 +77,8 @@ def rule_error(line_number: int, message: str):
 def parse_strategy_text(rule_text: str) -> ParsedStrategy:
     if not isinstance(rule_text, str) or not rule_text.strip():
         raise StrategyValidationError("Strategy rules cannot be empty.")
+    if is_session_breakout_strategy(rule_text):
+        return parse_session_breakout_text(rule_text)
 
     rules = []
     current = None
@@ -102,6 +130,112 @@ def parse_strategy_text(rule_text: str) -> ParsedStrategy:
     return ParsedStrategy(rules=tuple(SignalRule(**rule) for rule in rules))
 
 
+def is_session_breakout_strategy(rule_text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", rule_text.strip().lower())
+    return any(header in normalized for header in ("asia session breakout", "us premarket breakout", "impulsive trader"))
+
+
+def parse_session_breakout_text(rule_text: str) -> ParsedStrategy:
+    session_start = "00:00"
+    session_end = "06:00"
+    cutoff = "19:30"
+    tz = "America/New_York"
+    reward_risk = Decimal("4")
+    saw_header = False
+    regular_hours_only = False
+    signal_start = None
+    cutoff_tz = None
+    seen = set()
+
+    for line_number, raw_line in enumerate(rule_text.splitlines(), 1):
+        line = re.sub(r"\s+", " ", raw_line.strip())
+        lowered = line.lower()
+        if not lowered:
+            continue
+        if lowered in {"asia session breakout", "us premarket breakout", "impulsive trader auto b & s signal"}:
+            if saw_header or seen:
+                rule_error(line_number, "Use one session breakout header, before the settings.")
+            saw_header = True
+            regular_hours_only = lowered == "us premarket breakout"
+            if regular_hours_only:
+                session_start, session_end, signal_start, cutoff = "03:30", "09:30", "09:30", "16:00"
+            continue
+        session_match = SESSION_PATTERN.fullmatch(lowered)
+        if session_match:
+            if "session" in seen:
+                rule_error(line_number, "Duplicate SESSION setting.")
+            seen.add("session")
+            session_start, session_end, tz = session_match.groups()
+            validate_time_token(session_start, line_number)
+            validate_time_token(session_end, line_number)
+            continue
+        cutoff_match = CUTOFF_PATTERN.fullmatch(lowered)
+        signal_session_match = SIGNAL_SESSION_PATTERN.fullmatch(lowered)
+        if cutoff_match or signal_session_match:
+            if "signals" in seen:
+                rule_error(line_number, "Duplicate SIGNALS setting.")
+            seen.add("signals")
+            if signal_session_match:
+                signal_start, cutoff, cutoff_tz = signal_session_match.groups()
+                validate_time_token(signal_start, line_number)
+            else:
+                cutoff, cutoff_tz = cutoff_match.groups()
+            validate_time_token(cutoff, line_number)
+            continue
+        rr_match = REWARD_RISK_PATTERN.fullmatch(lowered)
+        if rr_match:
+            if "reward" in seen:
+                rule_error(line_number, "Duplicate REWARD:RISK setting.")
+            seen.add("reward")
+            reward_risk = Decimal(rr_match.group(1))
+            if reward_risk <= 0 or reward_risk > Decimal("20"):
+                rule_error(line_number, "Reward:risk must be greater than 0 and no more than 20:1.")
+            continue
+        if lowered == "one signal per session":
+            continue
+        rule_error(line_number, "Unsupported session breakout setting.")
+
+    if not saw_header:
+        raise StrategyValidationError("Start with US PREMARKET BREAKOUT or ASIA SESSION BREAKOUT.")
+    if cutoff_tz and cutoff_tz.lower() != tz.lower():
+        raise StrategyValidationError("Session and signal timezone must match.")
+    signal_start = signal_start or session_end
+    if not session_start < session_end <= signal_start < cutoff:
+        raise StrategyValidationError("Use same-day times: session start < session end <= signals start < signals end.")
+    tz = canonical_timezone(tz)
+    try:
+        ZoneInfo(tz)
+    except ZoneInfoNotFoundError as exc:
+        raise StrategyValidationError(f"Unsupported timezone: {tz}.") from exc
+    if regular_hours_only and (tz != "America/New_York" or session_end > "09:30" or signal_start < "09:30" or cutoff > "16:00"):
+        raise StrategyValidationError("US premarket must end by 09:30; signals must stay within 09:30-16:00 America/New_York.")
+    return ParsedStrategy(
+        rules=(),
+        strategy_type="session_breakout",
+        session_start=session_start,
+        session_end=session_end,
+        cutoff=cutoff,
+        timezone=tz,
+        reward_risk_ratio=reward_risk,
+        signal_start=signal_start,
+        regular_hours_only=regular_hours_only,
+    )
+
+
+def validate_time_token(value: str, line_number: int) -> None:
+    hour, minute = [int(part) for part in value.split(":")]
+    if hour > 23 or minute > 59:
+        rule_error(line_number, "Times must use HH:MM in 24-hour format.")
+
+
+@lru_cache(maxsize=64)
+def canonical_timezone(value: str) -> str:
+    if value.lower() == "america/new_york":
+        return "America/New_York"
+    return next((zone for zone in available_timezones() if zone.lower() == value.lower()), value)
+
+
+@transaction.atomic
 def ensure_default_strategies() -> None:
     Strategy.objects.get_or_create(
         name=DEFAULT_STRATEGY_NAME,
@@ -118,12 +252,46 @@ def ensure_default_strategies() -> None:
             "max_spread_percent": Decimal("0.500000"),
         },
     )
+    Strategy.objects.get_or_create(
+        name=IMPULSIVE_STRATEGY_NAME,
+        defaults={
+            "enabled": True,
+            "rule_text": IMPULSIVE_STRATEGY_RULE_TEXT,
+            "trade_asset": Strategy.OPTION,
+            "risk_percent": Decimal("0.020000"),
+            "option_min_dte": 7,
+            "option_max_dte": 14,
+            "option_strike_mode": Strategy.ATM,
+            "option_take_profit_percent": Decimal("4.000000"),
+            "option_stop_loss_percent": Decimal("1.000000"),
+            "max_spread_percent": Decimal("0.500000"),
+        },
+    )
+    # Upgrade only the untouched built-in rules; never replace user-edited rules.
+    upgraded = Strategy.objects.filter(
+        name=IMPULSIVE_STRATEGY_NAME, rule_text=LEGACY_IMPULSIVE_STRATEGY_RULE_TEXT,
+    ).update(rule_text=IMPULSIVE_STRATEGY_RULE_TEXT, updated_at=timezone.now())
+    if upgraded:
+        StrategyScanState.objects.filter(strategy__name=IMPULSIVE_STRATEGY_NAME).update(
+            last_signal_time=None, last_error="", last_checked_at=None,
+        )
 
 
 def serialize_strategy(strategy: Strategy) -> dict[str, Any]:
+    chart_settings = None
     try:
-        parse_strategy_text(strategy.rule_text)
+        parsed = parse_strategy_text(strategy.rule_text)
         validation_error = ""
+        if parsed.strategy_type == "session_breakout":
+            chart_settings = {
+                "sessionStart": parsed.session_start,
+                "sessionEnd": parsed.session_end,
+                "signalStart": parsed.signal_start,
+                "cutoff": parsed.cutoff,
+                "timeZone": parsed.timezone,
+                "rewardRisk": float(parsed.reward_risk_ratio),
+                "regularHoursOnly": parsed.regular_hours_only,
+            }
     except StrategyValidationError as exc:
         validation_error = str(exc)
     return {
@@ -132,6 +300,7 @@ def serialize_strategy(strategy: Strategy) -> dict[str, Any]:
         "enabled": strategy.enabled,
         "validation_error": validation_error,
         "valid": not validation_error,
+        "chart_settings": chart_settings,
         "rule_text": strategy.rule_text,
         "trade_asset": strategy.trade_asset,
         "risk_percent": percent_to_ui(strategy.risk_percent),
@@ -151,6 +320,7 @@ def strategy_state() -> dict[str, Any]:
         "strategies": [serialize_strategy(strategy) for strategy in Strategy.objects.all()],
         "scan_states": [serialize_scan_state(scan_state) for scan_state in StrategyScanState.objects.select_related("strategy")[:300]],
         "template": DEFAULT_STRATEGY_RULE_TEXT,
+        "impulsive_template": IMPULSIVE_STRATEGY_RULE_TEXT,
     }
 
 

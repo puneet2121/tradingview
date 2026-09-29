@@ -7,6 +7,8 @@
     <title>Local Trading Dashboard</title>
     <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
     <script src="{% static 'vendor/lightweight-charts.standalone.production.js' %}" defer></script>
+    <script src="{% static 'dashboard/chart-sessions.js' %}" defer></script>
+    <script src="{% static 'dashboard/pine-scripts.js' %}" defer></script>
     <script src="{% static 'dashboard/app.js' %}" defer></script>
   </head>
   <body>
@@ -25,6 +27,13 @@
           <option value="8">8</option>
         </select>
       </label>
+      <label class="chart-count chart-appearance">
+        <span>Chart</span>
+        <select id="chart-theme" aria-label="Chart appearance">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
       <div class="paper-account" id="paper-account">
         <span id="paper-equity">$10,000.00</span>
         <span id="paper-pnl">$0.00</span>
@@ -33,6 +42,7 @@
         <button type="button" id="paper-watchlist-save">Save</button>
         <button type="button" id="paper-scan-now">Scan</button>
         <button type="button" id="strategy-toggle">Strategies</button>
+        <button type="button" id="pine-toggle">Pine Editor</button>
         <button type="button" id="option-chain-toggle">Options</button>
         <button type="button" id="paper-history-toggle">History</button>
         <button type="button" id="paper-reset">Reset</button>
@@ -40,6 +50,34 @@
     </header>
 
     <main id="chart-grid" class="chart-grid chart-grid-4" aria-live="polite"></main>
+    <dialog id="pine-editor" class="pine-editor" aria-labelledby="pine-title">
+      <header class="pine-header">
+        <strong id="pine-title">Pine Editor</strong>
+        <span class="pine-runtime">PineTS 0.10.0 · Experimental</span>
+        <button type="button" id="pine-close" aria-label="Close Pine editor" title="Close">x</button>
+      </header>
+      <div class="pine-workspace">
+        <aside class="pine-library" aria-label="Saved Pine indicators">
+          <div class="pine-library-heading"><strong>Saved Indicators</strong><button type="button" id="pine-new">New</button></div>
+          <div id="pine-library-list"></div>
+        </aside>
+        <section class="pine-document">
+          <div class="pine-fields">
+            <label>Name<input id="pine-name" maxlength="80" autocomplete="off"></label>
+            <label>Template<select id="pine-template"><option value="ema">EMA crossover</option><option value="rsi">RSI</option><option value="trader">Trader B/S</option></select></label>
+          </div>
+          <textarea id="pine-source" aria-label="Pine Script source" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
+          <div class="pine-actions">
+            <button type="button" id="pine-validate">Validate</button>
+            <button type="button" id="pine-save">Save</button>
+            <select id="pine-chart" aria-label="Target chart"></select>
+            <button type="button" id="pine-add">Save &amp; Add to Chart</button>
+            <button type="button" id="pine-delete">Delete</button>
+          </div>
+          <div id="pine-status" role="status" aria-live="polite"></div>
+        </section>
+      </div>
+    </dialog>
     <aside class="paper-history" id="paper-history" hidden>
       <div class="paper-history-header">
         <strong>Paper Trades</strong>

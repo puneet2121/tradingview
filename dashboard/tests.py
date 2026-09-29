@@ -1,13 +1,37 @@
 import json
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
+import pandas as pd
 from django.test import TestCase, override_settings
 
+from .data_source import fetch_yfinance_history, fetch_yfinance_quote
 from .models import OptionPaperTrade, PaperTrade, PaperWatchSymbol, Strategy, StrategyScanState, TradeActivity
 from .options_paper import close_option_trade, open_option_trade, option_state, reset_option_trades
 from .paper_trading import STARTING_BALANCE, calculate_strategy_signals, calculate_testing1_signals, close_trade, ensure_default_watchlist, execute_option_signal, execute_signal, execute_strategy_signal, mark_automated_option_trades, mark_symbol, scan_strategy_for_watch, scan_watch_symbol
-from .strategy_engine import DEFAULT_STRATEGY_RULE_TEXT, parse_strategy_text
+from .strategy_engine import DEFAULT_STRATEGY_RULE_TEXT, IMPULSIVE_STRATEGY_NAME, IMPULSIVE_STRATEGY_RULE_TEXT, ensure_default_strategies, parse_strategy_text
+
+
+class DataSourceTests(TestCase):
+    def test_yfinance_intraday_history_requests_extended_hours(self):
+        with patch("yfinance.download", return_value=pd.DataFrame()) as download:
+            self.assertEqual(fetch_yfinance_history("SOFI", "5m"), [])
+
+        self.assertTrue(download.call_args.kwargs["prepost"])
+
+    def test_yfinance_quote_requests_extended_hours(self):
+        class FakeTicker:
+            def history(self, **kwargs):
+                self.kwargs = kwargs
+                return pd.DataFrame()
+
+        fake = FakeTicker()
+        with patch("yfinance.Ticker", return_value=fake):
+            fetch_yfinance_quote("SOFI")
+
+        self.assertTrue(fake.kwargs["prepost"])
 
 
 class StrategyParserTests(TestCase):
@@ -67,6 +91,24 @@ BUY PUT WHEN VWAP crosses above 9 EMA"""
         parsed = parse_strategy_text("Buy Call When VWAP Crosses Below EMA ( 15 ) AND volume > previous volume AND close > previous close")
         self.assertEqual(parsed.rules[0].ema_period, 15)
         self.assertTrue(parsed.rules[0].require_close_confirmation)
+
+    def test_impulsive_session_breakout_parses_with_four_to_one_reward_risk(self):
+        parsed = parse_strategy_text(IMPULSIVE_STRATEGY_RULE_TEXT)
+
+        self.assertEqual(parsed.strategy_type, "session_breakout")
+        self.assertEqual(parsed.session_start, "03:30")
+        self.assertEqual(parsed.session_end, "09:30")
+        self.assertEqual(parsed.cutoff, "16:00")
+        self.assertEqual(parsed.timezone, "America/New_York")
+        self.assertEqual(parsed.reward_risk_ratio, Decimal("4"))
+
+    def test_default_strategies_include_impulsive_breakout(self):
+        ensure_default_strategies()
+
+        strategy = Strategy.objects.get(name=IMPULSIVE_STRATEGY_NAME)
+        self.assertTrue(strategy.enabled)
+        self.assertEqual(strategy.rule_text, IMPULSIVE_STRATEGY_RULE_TEXT)
+        self.assertEqual(strategy.option_take_profit_percent, Decimal("4.000000"))
 
 
 @override_settings(ALPACA_PAPER_ENABLED=False)
@@ -150,6 +192,9 @@ class StrategyValidationTests(TestCase):
 
 
 class StrategySignalEvaluationTests(TestCase):
+    def ny_time(self, year, month, day, hour, minute=0):
+        return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
     def test_confirmation_conditions_and_periods_belong_to_their_own_rule(self):
         strategy = Strategy(rule_text="""BUY CALL WHEN EMA(9) crosses above VWAP
 AND volume is increasing
@@ -169,6 +214,40 @@ BUY PUT WHEN EMA(21) crosses below VWAP""")
         expected = calculate_testing1_signals(bars)
         self.assertTrue(expected)
         self.assertEqual(calculate_strategy_signals(bars, Strategy(rule_text=DEFAULT_STRATEGY_RULE_TEXT)), expected)
+
+    def test_impulsive_session_breakout_buy_uses_session_low_stop_and_four_r_target(self):
+        bars = [
+            {"time": self.ny_time(2026, 9, 15, 4), "open": 95, "high": 100, "low": 94, "close": 96, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 8), "open": 96, "high": 99, "low": 90, "close": 95, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 30), "open": 95, "high": 99, "low": 94, "close": 99, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 35), "open": 99, "high": 103, "low": 98, "close": 101, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 40), "open": 101, "high": 104, "low": 100, "close": 103, "volume": 100},
+        ]
+
+        signals = calculate_strategy_signals(bars, Strategy(rule_text=IMPULSIVE_STRATEGY_RULE_TEXT))
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["side"], "BUY")
+        self.assertEqual(signals[0]["time"], self.ny_time(2026, 9, 15, 9, 35))
+        self.assertEqual(signals[0]["stop_price"], 90)
+        self.assertEqual(signals[0]["target_price"], 145)
+
+    def test_impulsive_session_breakout_sell_uses_session_high_stop_and_four_r_target(self):
+        bars = [
+            {"time": self.ny_time(2026, 9, 15, 4), "open": 95, "high": 100, "low": 92, "close": 96, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 8), "open": 96, "high": 98, "low": 90, "close": 94, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 30), "open": 94, "high": 98, "low": 91, "close": 91, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 35), "open": 91, "high": 92, "low": 88, "close": 89, "volume": 100},
+            {"time": self.ny_time(2026, 9, 15, 9, 40), "open": 89, "high": 93, "low": 87, "close": 88, "volume": 100},
+        ]
+
+        signals = calculate_strategy_signals(bars, Strategy(rule_text=IMPULSIVE_STRATEGY_RULE_TEXT))
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["side"], "SELL")
+        self.assertEqual(signals[0]["time"], self.ny_time(2026, 9, 15, 9, 35))
+        self.assertEqual(signals[0]["stop_price"], 100)
+        self.assertEqual(signals[0]["target_price"], 45)
 
 
 @override_settings(ALPACA_PAPER_ENABLED=False)

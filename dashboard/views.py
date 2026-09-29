@@ -3,6 +3,7 @@ import json
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_http_methods
 
@@ -61,6 +62,7 @@ def discord_test(request):
 
 
 @require_GET
+@ensure_csrf_cookie
 def index(request):
     return render(request, "dashboard/index.html")
 
