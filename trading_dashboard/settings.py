@@ -8,6 +8,9 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
     "django.contrib.staticfiles",
     "channels",
     "dashboard.apps.DashboardConfig",
@@ -37,6 +40,7 @@ TIME_ZONE = "America/Los_Angeles"
 USE_TZ = True
 PAPER_SCANNER_ENABLED = os.environ.get("PAPER_SCANNER_ENABLED", "true").lower() == "true"
 PAPER_SCANNER_INTERVAL_SECONDS = 60
+ALERT_SCANNER_ENABLED = os.environ.get("ALERT_SCANNER_ENABLED", "true").lower() == "true"
 
 ALPACA_PAPER_ENABLED = os.environ.get("ALPACA_PAPER_ENABLED", "false").lower() == "true"
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")

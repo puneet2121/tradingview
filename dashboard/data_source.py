@@ -132,19 +132,21 @@ def available_config() -> dict[str, Any]:
     }
 
 
-def fetch_yfinance_history(symbol: str, timeframe: str) -> list[dict[str, float | int]]:
+def fetch_yfinance_history(symbol: str, timeframe: str, *, period=None, prepost=True, limit=500, ignore_tz=None) -> list[dict[str, float | int]]:
     import pandas as pd
     import yfinance as yf
 
     config = get_timeframe(timeframe)
     frame = yf.download(
         tickers=symbol,
-        period=config["yf_period"],
+        period=period or config["yf_period"],
         interval=config["yf_interval"],
         progress=False,
         auto_adjust=False,
-        prepost=True,
+        prepost=prepost,
         threads=False,
+        timeout=15,
+        ignore_tz=ignore_tz,
     )
     if frame.empty:
         return []
@@ -160,7 +162,7 @@ def fetch_yfinance_history(symbol: str, timeframe: str) -> list[dict[str, float 
     if "yf_resample_rule" in config:
         frame = resample_ohlcv(frame, str(config["yf_resample_rule"]))
     bars: list[dict[str, float | int]] = []
-    for timestamp, row in frame.tail(500).iterrows():
+    for timestamp, row in frame.tail(limit).iterrows():
         if timestamp.tzinfo is None:
             timestamp = timestamp.tz_localize(timezone.utc)
         else:
@@ -176,6 +178,14 @@ def fetch_yfinance_history(symbol: str, timeframe: str) -> list[dict[str, float 
             }
         )
     return bars
+
+
+def get_alert_history(symbol: str, timeframe: str) -> list[dict[str, float | int]]:
+    """Regular-session history with enough warm-up for a 200-period alert."""
+    if get_symbol(symbol).provider != "yfinance":
+        return get_history(symbol, timeframe)
+    periods = {"1m": "5d", "3m": "5d", "5m": "1mo", "15m": "1mo", "30m": "3mo", "1h": "1y", "1d": "2y"}
+    return fetch_yfinance_history(symbol, timeframe, period=periods[timeframe], prepost=False, limit=1000, ignore_tz=False)
 
 
 def resample_ohlcv(frame, rule: str):

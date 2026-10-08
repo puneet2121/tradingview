@@ -693,6 +693,7 @@ function initChart(pane) {
   }
   pane.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
     if (pane.rangeSource === "main") syncTimeScaleRange(pane, pane.lowerChart, range);
+    if (pane.indicatorInstances.some((instance) => instance.pineSimulation)) applyIndicatorMarkers(pane);
   });
   pane.lowerChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
     if (pane.rangeSource === "lower" && pane.chartShell.classList.contains("has-lower-chart")) {
@@ -943,9 +944,14 @@ async function fetchSymbol(symbol, market) {
 }
 
 async function postJson(url, body = {}) {
+  const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("csrftoken="));
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrf ? decodeURIComponent(csrf.slice(10)) : "",
+    },
     body: JSON.stringify(body),
   });
   const payload = await response.json();
@@ -1986,8 +1992,8 @@ function removeIndicator(pane, uid) {
   const removed = pane.indicatorInstances.find((item) => item.uid === uid);
   if (removed) PineScripts.cancel(removed);
   const ranges = getVisibleRanges(pane);
-  pane.indicatorInstances = pane.indicatorInstances.filter((instance) => instance.uid !== uid);
   removeIndicatorSeries(pane, uid);
+  pane.indicatorInstances = pane.indicatorInstances.filter((instance) => instance.uid !== uid);
   updatePriceMargins(pane);
   renderIndicatorChips(pane);
   updateLowerChartVisibility(pane);
@@ -2126,7 +2132,7 @@ function applyIndicatorMarkers(pane) {
   const markers = Array.from(pane.indicatorMarkers.values())
     .flat()
     .sort((left, right) => left.time - right.time);
-  pane.series.setMarkers(markers);
+  pane.series.setMarkers(PineScripts.readableMarkers(pane, markers));
 }
 
 function updateIndicators(pane) {

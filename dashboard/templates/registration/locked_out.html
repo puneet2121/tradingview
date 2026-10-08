@@ -1,0 +1,6 @@
+{% extends "registration/base.html" %}
+{% block content %}
+<h2>Too many attempts</h2>
+<p role="alert">Please wait 15 minutes before trying again.</p>
+<a href="{% url 'login' %}">Back to sign in</a>
+{% endblock %}

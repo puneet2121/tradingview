@@ -5,3 +5,6 @@ websockets>=12.0,<16.0
 requests>=2.31,<3.0
 certifi>=2024.2.2
 yfinance>=0.2.40,<0.3.0
+whitenoise>=6.8,<7.0
+django-axes>=8.0,<9.0
+exchange-calendars>=4.5,<5.0

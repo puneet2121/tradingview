@@ -1,8 +1,11 @@
 from django.urls import path
 
-from . import pine_scripts, views
+from . import alert_views, pine_scripts, views
 
 urlpatterns = [
+    path("api/alerts/", alert_views.alerts, name="market_alerts"),
+    path("api/alerts/events/", alert_views.events, name="market_alert_events"),
+    path("api/alerts/<int:alert_id>/", alert_views.alerts, name="market_alert"),
     path("", views.index, name="index"),
     path("api/config/", views.config, name="config"),
     path("api/history/", views.history, name="history"),
@@ -21,6 +24,7 @@ urlpatterns = [
     path("api/pine/<int:script_id>/", pine_scripts.scripts, name="pine_script"),
     path("api/pine/worker/", pine_scripts.worker, name="pine_worker"),
     path("api/pine/trader-template/", pine_scripts.trader_template, name="pine_trader_template"),
+    path("api/pine/scalper-template/", pine_scripts.scalper_template, name="pine_scalper_template"),
     path("api/options/expirations/", views.option_expirations, name="option_expirations"),
     path("api/options/chain/", views.option_chain, name="option_chain"),
     path("api/options/paper/state/", views.option_paper_state, name="option_paper_state"),

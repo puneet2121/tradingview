@@ -22,6 +22,12 @@ REGULAR_MARKET_OPEN = time(9, 30)
 REGULAR_MARKET_CLOSE = time(16, 0)
 
 
+class DiscordDeliveryError(RuntimeError):
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def dispatch_trade_activity_alert(event_id: int) -> None:
     try:
         event = TradeActivity.objects.get(pk=event_id)
@@ -67,6 +73,7 @@ def post_discord_message(content: str) -> None:
         {
             "username": getattr(settings, "DISCORD_ALERT_USERNAME", "Trading Dashboard"),
             "content": content[:2000],
+            "allowed_mentions": {"parse": []},
         }
     ).encode("utf-8")
     req = request.Request(
@@ -82,6 +89,12 @@ def post_discord_message(content: str) -> None:
             if response.status >= 400:
                 raise RuntimeError(f"Discord webhook returned HTTP {response.status}.")
     except error.HTTPError as exc:
+        if exc.code == 429:
+            try:
+                delay = float(json.loads(exc.read(4096)).get("retry_after", 60))
+            except (ValueError, TypeError):
+                delay = 60
+            raise DiscordDeliveryError("Discord rate limited this alert.", retry_after=max(1, min(delay, 900))) from exc
         raise RuntimeError(f"Discord webhook returned HTTP {exc.code}.") from exc
     except error.URLError as exc:
         raise RuntimeError(f"Discord webhook request failed: {exc.reason}") from exc

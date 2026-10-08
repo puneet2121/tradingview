@@ -99,6 +99,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.sharing-account {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+}
+
 .paper-account button,
 .paper-tools button,
 .paper-history button,
@@ -1095,7 +1102,18 @@ input:focus {
 .pine-editor button:disabled { opacity: 0.45; cursor: default; }
 #pine-status { font-size: 12px; line-height: 1.5; color: #adb5bd; overflow-wrap: anywhere; max-height: 90px; overflow: auto; white-space: pre-wrap; }
 #pine-status.error { color: #ff8795; }
+.pine-feedback { min-height: 0; overflow: auto; }
+.pine-recovery { display: flex; gap: 6px; flex-wrap: wrap; }
+.pine-recovery button { margin-top: 6px; }
+.pine-recovery button[hidden] { display: none; }
 .pane .indicator-error { border-color: #e05260; }
+.chart-footer:has(.pine-result) { flex-wrap: wrap; }
+.pine-result { position: relative; min-width: 0; max-width: 170px; margin-left: auto; }
+.pine-result > summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chart-text); }
+.pine-result-content { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 8px); width: 300px; max-width: calc(100cqw - 20px); max-height: min(330px, 50vh); overflow: auto; padding: 8px; background: var(--chart-bg); border: 1px solid var(--chart-border); border-radius: 4px; box-shadow: 0 4px 20px #0003; color: var(--chart-text); font-size: 11px; }
+.pine-result-content table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 4px 0 10px; }
+.pine-result-content td { padding: 4px; border-bottom: 1px solid var(--chart-border); overflow-wrap: anywhere; }
+.pine-result-content td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 @media (max-width: 650px) {
   .pine-editor { width: calc(100vw - 12px); height: calc(100dvh - 16px); }
   .pine-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 112px minmax(0, 1fr); }

@@ -1,0 +1,53 @@
+<dialog id="alerts-dialog" class="alerts-dialog" aria-labelledby="alerts-title">
+  <header class="alerts-heading">
+    <h2 id="alerts-title">My Alerts</h2>
+    <button type="button" id="alerts-close">Close</button>
+  </header>
+  <div class="alerts-connection" id="alerts-connection" role="status"></div>
+  <nav class="alerts-tabs" aria-label="Alert views">
+    <button type="button" id="alerts-rules-tab" aria-pressed="true">Rules</button>
+    <button type="button" id="alerts-history-tab" aria-pressed="false">Delivery History</button>
+    <button type="button" id="alerts-refresh">Refresh</button>
+  </nav>
+  <div id="alerts-status" class="alerts-status" role="status" aria-live="polite"></div>
+  <div id="alerts-rules-view" class="alerts-workspace">
+    <aside class="alerts-library" aria-label="Saved alerts">
+      <button type="button" id="alerts-new">New alert</button>
+      <div id="alerts-list"></div>
+    </aside>
+    <form id="alerts-form" class="alerts-form">
+      <div class="alerts-form-title"><h3 id="alerts-form-title">New Alert</h3><label class="alerts-checkbox"><input id="alert-enabled" type="checkbox" checked>Enabled</label></div>
+      <label>Name<input id="alert-name" maxlength="80" required value="200 SMA touch" autocomplete="off"></label>
+      <label>Symbols<input id="alert-symbols" required value="AAPL" placeholder="AAPL, SOFI, MU" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+      <fieldset class="alerts-timeframes"><legend>Timeframes</legend>
+        <label><input type="checkbox" name="alert-timeframe" value="1m">1m</label>
+        <label><input type="checkbox" name="alert-timeframe" value="3m">3m</label>
+        <label><input type="checkbox" name="alert-timeframe" value="5m" checked>5m</label>
+        <label><input type="checkbox" name="alert-timeframe" value="15m">15m</label>
+        <label><input type="checkbox" name="alert-timeframe" value="30m">30m</label>
+        <label><input type="checkbox" name="alert-timeframe" value="1h">1h</label>
+        <label><input type="checkbox" name="alert-timeframe" value="1d">Daily</label>
+      </fieldset>
+      <div class="alerts-condition">
+        <label>Source<select id="alert-left"><option value="price">Price</option><option value="ema">EMA</option><option value="sma">SMA</option></select></label>
+        <label id="alert-left-period-label" hidden>Period<input id="alert-left-period" type="number" min="1" max="200" step="1" value="9"></label>
+        <label class="alerts-operator">Condition<select id="alert-operator"><option value="touches">Touches</option><option value="crosses_above">Crosses above</option><option value="crosses_below">Crosses below</option><option value="above">Moves above</option><option value="below">Moves below</option></select></label>
+        <label>Target<select id="alert-right"><option value="sma">SMA</option><option value="ema">EMA</option><option value="level">Price level</option></select></label>
+        <label id="alert-right-period-label">Period<input id="alert-right-period" type="number" min="1" max="200" step="1" value="200"></label>
+        <label id="alert-level-label" hidden>Price<input id="alert-level" type="number" min="0.000001" step="any" value="200"></label>
+      </div>
+      <div class="alerts-settings">
+        <label id="alert-tolerance-label">Touch tolerance (%)<input id="alert-tolerance" type="number" min="0" max="5" step="0.01" value="0"></label>
+        <label>Cooldown (minutes)<input id="alert-cooldown" type="number" min="0" max="1440" step="1" value="0"></label>
+        <label>Trigger<select disabled><option>New match on candle close</option></select></label>
+        <label>Session<select disabled><option>US regular / Crypto 24h</option></select></label>
+      </div>
+      <div class="alerts-actions"><button type="submit" id="alert-save">Save alert</button><button type="button" id="alert-delete" hidden>Delete alert</button></div>
+      <details id="alert-scan-details" hidden><summary>Scan Status</summary><div id="alert-scan-states"></div></details>
+    </form>
+  </div>
+  <section id="alerts-history-view" hidden aria-label="Alert delivery history">
+    <div class="alerts-table-scroll"><table class="alerts-table"><thead><tr><th>Alert / Symbol</th><th>Close Price</th><th>Candle Close (Pacific)</th><th>Discord Delivery</th></tr></thead><tbody id="alerts-events"></tbody></table></div>
+    <button type="button" id="alerts-older" hidden>Older alerts</button>
+  </section>
+</dialog>

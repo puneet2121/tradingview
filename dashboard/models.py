@@ -1,6 +1,67 @@
 from decimal import Decimal
 
 from django.db import models
+from django.conf import settings
+from django.utils import timezone
+
+
+class MarketAlert(models.Model):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
+    name = models.CharField(max_length=80)
+    enabled = models.BooleanField(default=True)
+    symbols = models.JSONField(default=list)
+    timeframes = models.JSONField(default=list)
+    condition = models.JSONField(default=dict)
+    cooldown_minutes = models.PositiveIntegerField(default=0)
+    revision = models.PositiveIntegerField(default=1)
+    armed_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+
+class MarketAlertState(models.Model):
+    alert = models.ForeignKey(MarketAlert, on_delete=models.CASCADE, related_name="scan_states")
+    symbol = models.CharField(max_length=32)
+    timeframe = models.CharField(max_length=8)
+    last_bar_time = models.BigIntegerField(null=True)
+    checked_at = models.DateTimeField(null=True)
+    status = models.CharField(max_length=160, default="Waiting for scanner")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["alert", "symbol", "timeframe"], name="unique_market_alert_state")]
+
+
+class MarketAlertEvent(models.Model):
+    alert = models.ForeignKey(MarketAlert, null=True, on_delete=models.SET_NULL)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.CASCADE)
+    revision = models.PositiveIntegerField()
+    name = models.CharField(max_length=80)
+    symbol = models.CharField(max_length=32)
+    timeframe = models.CharField(max_length=8)
+    bar_time = models.BigIntegerField()
+    bar_closed_at = models.DateTimeField()
+    snapshot = models.JSONField(default=dict)
+    message = models.TextField()
+    status = models.CharField(max_length=16, default="pending", db_index=True)
+    error = models.CharField(max_length=200, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    retry_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["alert", "revision", "symbol", "timeframe", "bar_time"], name="unique_market_alert_event")]
+
+
+class MarketAlertWorker(models.Model):
+    key = models.CharField(max_length=16, primary_key=True, default="alerts")
+    lease_owner = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(default=timezone.now)
+    heartbeat_at = models.DateTimeField(null=True)
+    discord_retry_at = models.DateTimeField(null=True)
 
 
 class PineIndicator(models.Model):

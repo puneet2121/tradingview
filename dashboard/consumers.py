@@ -5,6 +5,7 @@ import ssl
 import certifi
 import websockets
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.conf import settings
 
 from .data_source import (
     HYPERLIQUID_WS_URL,
@@ -18,6 +19,11 @@ from .data_source import (
 class HyperliquidCandleConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.stream_task = None
+        if getattr(settings, "SHARING_ENABLED", False):
+            user = self.scope.get("user")
+            if not user or not user.is_authenticated or user.get_username() not in settings.SHARING_USERS:
+                await self.close(code=4401)
+                return
         await self.accept()
 
     async def disconnect(self, close_code):

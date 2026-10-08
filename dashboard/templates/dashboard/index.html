@@ -6,10 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Local Trading Dashboard</title>
     <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
+    <link rel="stylesheet" href="{% static 'dashboard/alerts.css' %}">
     <script src="{% static 'vendor/lightweight-charts.standalone.production.js' %}" defer></script>
     <script src="{% static 'dashboard/chart-sessions.js' %}" defer></script>
     <script src="{% static 'dashboard/pine-scripts.js' %}" defer></script>
     <script src="{% static 'dashboard/app.js' %}" defer></script>
+    <script src="{% static 'dashboard/alerts.js' %}" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -42,14 +44,23 @@
         <button type="button" id="paper-watchlist-save">Save</button>
         <button type="button" id="paper-scan-now">Scan</button>
         <button type="button" id="strategy-toggle">Strategies</button>
+        <button type="button" id="alerts-toggle">Alerts</button>
         <button type="button" id="pine-toggle">Pine Editor</button>
         <button type="button" id="option-chain-toggle">Options</button>
         <button type="button" id="paper-history-toggle">History</button>
         <button type="button" id="paper-reset">Reset</button>
+        {% if user.is_authenticated %}
+        <form class="sharing-account" action="{% url 'logout' %}" method="post">
+          {% csrf_token %}
+          <span>{{ user.username }}</span>
+          <button type="submit">Sign out</button>
+        </form>
+        {% endif %}
       </div>
     </header>
 
     <main id="chart-grid" class="chart-grid chart-grid-4" aria-live="polite"></main>
+    {% include "dashboard/alerts.html" %}
     <dialog id="pine-editor" class="pine-editor" aria-labelledby="pine-title">
       <header class="pine-header">
         <strong id="pine-title">Pine Editor</strong>
@@ -57,14 +68,14 @@
         <button type="button" id="pine-close" aria-label="Close Pine editor" title="Close">x</button>
       </header>
       <div class="pine-workspace">
-        <aside class="pine-library" aria-label="Saved Pine indicators">
-          <div class="pine-library-heading"><strong>Saved Indicators</strong><button type="button" id="pine-new">New</button></div>
+        <aside class="pine-library" aria-label="Saved Pine scripts">
+          <div class="pine-library-heading"><strong>Saved Scripts</strong><button type="button" id="pine-new">New</button></div>
           <div id="pine-library-list"></div>
         </aside>
         <section class="pine-document">
           <div class="pine-fields">
             <label>Name<input id="pine-name" maxlength="80" autocomplete="off"></label>
-            <label>Template<select id="pine-template"><option value="ema">EMA crossover</option><option value="rsi">RSI</option><option value="trader">Trader B/S</option></select></label>
+            <label>Template<select id="pine-template"><option value="ema">EMA crossover</option><option value="rsi">RSI</option><option value="trader">Trader B/S</option><option value="scalper">Trend scalper</option></select></label>
           </div>
           <textarea id="pine-source" aria-label="Pine Script source" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
           <div class="pine-actions">
@@ -74,7 +85,13 @@
             <button type="button" id="pine-add">Save &amp; Add to Chart</button>
             <button type="button" id="pine-delete">Delete</button>
           </div>
-          <div id="pine-status" role="status" aria-live="polite"></div>
+          <div class="pine-feedback">
+            <div id="pine-status" role="status" aria-live="polite"></div>
+            <div class="pine-recovery">
+              <button type="button" id="pine-compatible" hidden>Load compatible scalper</button>
+              <button type="button" id="pine-restore" hidden>Restore original source</button>
+            </div>
+          </div>
         </section>
       </div>
     </dialog>

@@ -1,0 +1,114 @@
+//@version=6
+indicator("Impulsive Trader Auto B & S Signal - US Regular Hours Only", overlay=true)
+
+string tz = "America/New_York"
+string rangeSession = input.session("0330-0930", "Premarket range (New York)")
+float rrRatio = input.float(4.0, "Reward / risk", minval=0.1, maxval=20.0, step=0.1)
+bool showRange = input.bool(true, "Show locked premarket range")
+bool showTradeLevels = input.bool(false, "Show active TP / SL levels")
+
+bool inRange = timeframe.isintraday and not na(time(timeframe.period, rangeSession + ":23456", tz)) and time_close <= time_close(timeframe.period, rangeSession + ":23456", tz)
+bool inRegular = timeframe.isintraday and not na(time(timeframe.period, "0930-1600:23456", tz)) and time_close <= time_close(timeframe.period, "0930-1600:23456", tz)
+int nyDate = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
+bool newDay = barstate.isfirst or nyDate != nyDate[1]
+bool sessionEnds = inRegular and hour(time_close, tz) == 16 and minute(time_close, tz) == 0
+
+var float sessHigh = na
+var float sessLow = na
+var float lockedHigh = na
+var float lockedLow = na
+var bool signalTakenToday = false
+var int tradeSide = 0
+var float targetTP = na
+var float stopSL = na
+
+bool triggerBuyEntry = false
+bool triggerSellEntry = false
+bool triggerBuyTP = false
+bool triggerSellTP = false
+bool triggerBuySL = false
+bool triggerSellSL = false
+bool triggerSessionEnd = false
+
+// Commit state only on closed candles, including the daily reset.
+if barstate.isconfirmed
+    if newDay
+        sessHigh := na
+        sessLow := na
+        lockedHigh := na
+        lockedLow := na
+        signalTakenToday := false
+        tradeSide := 0
+        targetTP := na
+        stopSL := na
+
+    if inRange
+        sessHigh := na(sessHigh) ? high : math.max(sessHigh, high)
+        sessLow := na(sessLow) ? low : math.min(sessLow, low)
+
+    if inRegular and not inRange and na(lockedHigh) and not na(sessHigh)
+        lockedHigh := sessHigh
+        lockedLow := sessLow
+
+    if inRegular and not inRange
+        // Check an existing trade before entries: no TP / SL on the entry bar.
+        if tradeSide == 1
+            if close >= targetTP
+                triggerBuyTP := true
+                tradeSide := 0
+            else if close <= stopSL
+                triggerBuySL := true
+                tradeSide := 0
+        else if tradeSide == -1
+            if close <= targetTP
+                triggerSellTP := true
+                tradeSide := 0
+            else if close >= stopSL
+                triggerSellSL := true
+                tradeSide := 0
+
+        bool rangeReady = not na(lockedHigh) and not na(lockedLow) and lockedHigh > lockedLow
+        // Compare both closes against today's fixed level, including the opening bar.
+        bool buyCross = rangeReady and not newDay and close[1] <= lockedHigh and close > lockedHigh
+        bool sellCross = rangeReady and not newDay and close[1] >= lockedLow and close < lockedLow
+        if not signalTakenToday and tradeSide == 0 and not sessionEnds
+            if buyCross
+                stopSL := lockedLow
+                targetTP := close + (close - stopSL) * rrRatio
+                tradeSide := 1
+                signalTakenToday := true
+                triggerBuyEntry := true
+            else if sellCross
+                float sellTarget = close - (lockedHigh - close) * rrRatio
+                if sellTarget > 0
+                    stopSL := lockedHigh
+                    targetTP := sellTarget
+                    tradeSide := -1
+                    signalTakenToday := true
+                    triggerSellEntry := true
+
+        if sessionEnds and tradeSide != 0
+            triggerSessionEnd := true
+            tradeSide := 0
+
+    if not inRegular and not inRange
+        tradeSide := 0
+
+// This is an indicator, not an order-executing strategy. END is not TP or SL.
+plot(showRange and inRegular and not newDay ? lockedHigh : na, "Locked High", color.green, 2, plot.style_linebr)
+plot(showRange and inRegular and not newDay ? lockedLow : na, "Locked Low", color.red, 2, plot.style_linebr)
+plot(showTradeLevels and inRegular and tradeSide != 0 ? targetTP : na, "Active TP", color.green, 1, plot.style_linebr)
+plot(showTradeLevels and inRegular and tradeSide != 0 ? stopSL : na, "Active SL", color.red, 1, plot.style_linebr)
+
+plotshape(triggerBuyEntry, title="Buy Signal", style=shape.triangleup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.green, size=size.tiny)
+plotshape(triggerSellEntry, title="Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.red, size=size.tiny)
+plotshape(triggerBuyTP, title="Buy TP Hit", style=shape.triangleup, location=location.abovebar, color=color.green, text="TP", textcolor=color.green, size=size.tiny)
+plotshape(triggerSellTP, title="Sell TP Hit", style=shape.triangledown, location=location.belowbar, color=color.green, text="TP", textcolor=color.green, size=size.tiny)
+plotshape(triggerBuySL, title="Buy SL Hit", style=shape.triangledown, location=location.belowbar, color=color.red, text="SL", textcolor=color.red, size=size.tiny)
+plotshape(triggerSellSL, title="Sell SL Hit", style=shape.triangleup, location=location.abovebar, color=color.red, text="SL", textcolor=color.red, size=size.tiny)
+plotshape(triggerSessionEnd, title="Session End", style=shape.square, location=location.abovebar, color=color.gray, text="END", textcolor=color.gray, size=size.tiny)
+
+alertcondition(triggerBuyEntry, "Trader B/S Buy", "Trader B/S BUY: {{ticker}} {{interval}} close {{close}}")
+alertcondition(triggerSellEntry, "Trader B/S Sell", "Trader B/S SELL: {{ticker}} {{interval}} close {{close}}")
+alertcondition(triggerBuyTP or triggerSellTP, "Trader B/S TP", "Trader B/S TP: {{ticker}} {{interval}} close {{close}}")
+alertcondition(triggerBuySL or triggerSellSL, "Trader B/S SL", "Trader B/S SL: {{ticker}} {{interval}} close {{close}}")

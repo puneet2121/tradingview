@@ -2,7 +2,7 @@ import json
 
 from django.http import JsonResponse
 from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_http_methods
@@ -49,7 +49,7 @@ def trade_activity(request):
         return JsonResponse({"error": "Invalid activity cursor."}, status=400)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def discord_test(request):
     try:
@@ -132,7 +132,7 @@ def json_body(request):
         raise ValueError("Invalid JSON body.") from exc
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def paper_signal(request):
     try:
@@ -142,7 +142,7 @@ def paper_signal(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def paper_mark(request):
     try:
@@ -153,14 +153,14 @@ def paper_mark(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def paper_reset(request):
     reset_paper_trades()
     return JsonResponse(account_state())
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["GET", "POST"])
 def paper_watchlist(request):
     if request.method == "GET":
@@ -178,14 +178,14 @@ def paper_watchlist(request):
         return JsonResponse({"error": str(exc)}, status=400)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def paper_scan(request):
     scan_enabled_watchlist()
     return JsonResponse(account_state())
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["GET", "POST"])
 def strategies(request):
     if request.method == "GET":
@@ -223,7 +223,7 @@ def option_paper_state(request):
     return JsonResponse(option_state())
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def option_paper_trade(request):
     try:
@@ -235,7 +235,7 @@ def option_paper_trade(request):
         return JsonResponse({"error": f"Option trade failed: {exc}"}, status=502)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def option_paper_close(request):
     try:
@@ -249,7 +249,7 @@ def option_paper_close(request):
         return JsonResponse({"error": f"Option close failed: {exc}"}, status=502)
 
 
-@csrf_exempt
+@csrf_protect
 @require_http_methods(["POST"])
 def option_paper_reset(request):
     reset_option_trades()

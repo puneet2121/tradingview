@@ -5,3 +5,7 @@ db.sqlite3
 .DS_Store
 .idea/
 .qodo/
+.local-sharing/
+staticfiles/
+.env
+.env.*

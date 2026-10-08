@@ -6,6 +6,7 @@ class DashboardConfig(AppConfig):
     name = "dashboard"
 
     def ready(self):
-        from .scanner import start_scanner_once
+        from .scanner import start_alert_scanner_once, start_scanner_once
 
         start_scanner_once()
+        start_alert_scanner_once()
