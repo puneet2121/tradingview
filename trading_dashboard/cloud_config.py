@@ -19,20 +19,52 @@ def flag(name, default=False, env=None):
 
 def identity(env=None):
     env = os.environ if env is None else env
-    domains = env.get("APP_HOSTS", "").split(",")
-    domains += [env.get("RENDER_EXTERNAL_HOSTNAME", ""), env.get("RAILWAY_PUBLIC_DOMAIN", "")]
+    hosts = []
+    for name in ("APP_HOSTS", "RENDER_EXTERNAL_HOSTNAME", "RAILWAY_PUBLIC_DOMAIN"):
+        raw = env.get(name, "")
+        values = raw.split(",") if name == "APP_HOSTS" else [raw]
+        for value in values:
+            if not value.strip():
+                continue
+            try:
+                host = normalize_domain(value.strip())
+            except (ValueError, TypeError):
+                raise ImproperlyConfigured(
+                    f"{name} contains an invalid public hostname. Use a hostname "
+                    "such as your-service.onrender.com, without a port, path, "
+                    "wildcard, IP address, or surrounding quotes."
+                ) from None
+            if host not in hosts:
+                hosts.append(host)
+    if not hosts:
+        raise ImproperlyConfigured(
+            "APP_HOSTS is missing and no platform public domain is available. "
+            "Set APP_HOSTS to your service's public hostname."
+        )
+
+    secret = env.get("DJANGO_SECRET_KEY", "")
+    if not secret:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is missing. Add it to the service environment "
+            "under that exact name, not SECRET_KEY."
+        )
+    if not isinstance(secret, str) or len(secret) < 50 or len(set(secret)) < 5 or secret.startswith("django-insecure-"):
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is invalid. Use a randomly generated secret of "
+            "at least 50 characters, with at least five distinct characters "
+            "and without the django-insecure- prefix."
+        )
+
     try:
-        hosts = list(dict.fromkeys(normalize_domain(host.strip()) for host in domains if host.strip()))
-        if not hosts:
-            raise ValueError
-        secret = env.get("DJANGO_SECRET_KEY", "")
-        if len(secret) < 50 or len(set(secret)) < 5 or secret.startswith("django-insecure-"):
-            raise ValueError
         cfg = validate_config({"domain": hosts[0], "secret_key": secret,
             "users": [u.strip() for u in env.get("SHARING_USERS", "trader1,trader2,trader3,trader4").split(",")]})
-        return {**cfg, "hosts": hosts}
     except (ValueError, TypeError, KeyError):
-        raise ImproperlyConfigured("Set APP_HOSTS (or the platform public domain), a strong DJANGO_SECRET_KEY of at least 50 characters, and four distinct SHARING_USERS.") from None
+        raise ImproperlyConfigured(
+            "SHARING_USERS must contain exactly four distinct comma-separated "
+            "usernames, for example trader1,trader2,trader3,trader4. "
+            "Each username must be 1-50 letters, numbers, dots, underscores, or hyphens."
+        ) from None
+    return {**cfg, "hosts": hosts}
 
 
 def database(env=None):

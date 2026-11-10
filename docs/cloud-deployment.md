@@ -66,7 +66,10 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(64))'
 ```
 
 Store it as `DJANGO_SECRET_KEY` in the hosting dashboard. Keep it stable across
-deployments. Separately create four distinct passwords in your password manager,
+deployments. The variable must be named **`DJANGO_SECRET_KEY`**, not `SECRET_KEY`.
+Paste only the generated value, with no surrounding quotes. A short generated
+value is not sufficient; the app requires at least 50 characters.
+Separately create four distinct passwords in your password manager,
 each at least 12 characters. Store them in one secret environment variable,
 `CLOUD_INITIAL_PASSWORDS`, as a JSON object. Replace these placeholders:
 
@@ -161,6 +164,16 @@ Keep one replica and check credits/usage before relying on the service.
 
 ## Troubleshooting
 
+- **Build fails in `cloud_config.identity`:** Django has started, but an identity
+  environment variable is missing or invalid. This is not a pip or database
+  connection error. In Render's service Environment page, set `DJANGO_SECRET_KEY`
+  to a random secret of at least 50 characters (see the generation command above).
+  Set `SHARING_USERS=trader1,trader2,trader3,trader4`, or remove that variable to
+  use those defaults; do not leave it blank. Set `APP_HOSTS` to the exact public
+  hostname, such as `your-service.onrender.com`, or remove it to use Render's
+  automatic hostname. Do not use wildcards, ports, or quotes. Choose **Save,
+  rebuild, and deploy**. Updated validation names the failing variable without
+  printing its value; older deployed commits show the combined error message.
 - **Startup fails:** check that the private schema exists, the connection URI
   uses Session pooler port 5432 with a URL-encoded password, Supabase is active,
   and all required environment variables are present. Errors deliberately

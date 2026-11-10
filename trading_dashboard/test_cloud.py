@@ -35,6 +35,36 @@ class CloudConfigurationTests(SimpleTestCase):
             with self.assertRaises(ImproperlyConfigured):
                 identity(env)
 
+    def test_identity_errors_name_the_setting_without_echoing_values(self):
+        cases = [
+            ({"APP_HOSTS": "", "RENDER_EXTERNAL_HOSTNAME": ""}, "APP_HOSTS"),
+            ({"APP_HOSTS": "https://private-invalid.example.com/secret-path"}, "APP_HOSTS"),
+            ({"RENDER_EXTERNAL_HOSTNAME": "private-invalid:1234"}, "RENDER_EXTERNAL_HOSTNAME"),
+            ({"RAILWAY_PUBLIC_DOMAIN": "private-invalid:1234"}, "RAILWAY_PUBLIC_DOMAIN"),
+            ({"DJANGO_SECRET_KEY": ""}, "DJANGO_SECRET_KEY is missing"),
+            ({"DJANGO_SECRET_KEY": "private-invalid-short-key"}, "DJANGO_SECRET_KEY is invalid"),
+            ({"DJANGO_SECRET_KEY": "x" * 60}, "DJANGO_SECRET_KEY is invalid"),
+            ({"DJANGO_SECRET_KEY": "django-insecure-" + IDENTITY["DJANGO_SECRET_KEY"]}, "DJANGO_SECRET_KEY is invalid"),
+            ({"SHARING_USERS": "private-invalid,private-invalid,two,three"}, "SHARING_USERS"),
+            ({"SHARING_USERS": "private-invalid,two,three,four,five"}, "SHARING_USERS"),
+            ({"SHARING_USERS": "private-invalid@user,two,three,four"}, "SHARING_USERS"),
+            ({"SHARING_USERS": ""}, "SHARING_USERS"),
+        ]
+        for overrides, message in cases:
+            with self.subTest(setting=message):
+                with self.assertRaisesRegex(ImproperlyConfigured, message) as error:
+                    identity({**IDENTITY, **overrides})
+                self.assertNotIn("private-invalid", str(error.exception))
+                self.assertNotIn(IDENTITY["DJANGO_SECRET_KEY"], str(error.exception))
+
+    def test_render_defaults_do_not_require_app_hosts_or_explicit_users(self):
+        cfg = identity({
+            "RENDER_EXTERNAL_HOSTNAME": "example.onrender.com",
+            "DJANGO_SECRET_KEY": IDENTITY["DJANGO_SECRET_KEY"],
+        })
+        self.assertEqual(cfg["hosts"], ["example.onrender.com"])
+        self.assertEqual(cfg["users"], list(USERS))
+
     def test_postgres_tls_no_sqlite_fallback_and_sanitized_errors(self):
         data = database({"DATABASE_URL":"postgresql://user:private-password@aws-0-us.pooler.supabase.com:5432/postgres?sslmode=disable"})
         self.assertEqual(data["ENGINE"], "django.db.backends.postgresql")
