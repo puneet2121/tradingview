@@ -178,6 +178,17 @@ Keep one replica and check credits/usage before relying on the service.
   uses Session pooler port 5432 with a URL-encoded password, Supabase is active,
   and all required environment variables are present. Errors deliberately
   avoid printing the connection string or initial passwords.
+- **Build fails in `cloud_config.database`:** this is local configuration
+  validation, before connecting to Supabase. In Render's service Environment
+  page, set `DATABASE_URL` to the complete URI from **Supabase > Connect >
+  Session pooler** (port 5432), `DATABASE_SCHEMA` to `trading_app`, and
+  `DATABASE_SSL_REQUIRE` to `true`. The URL must start with `postgresql://` or
+  `postgres://`, not `https://`. Replace the password placeholder with your
+  URL-encoded database password; paste only the URI, not a `psql` command or
+  `DATABASE_URL=` assignment, and do not wrap it in quotes. Copy the entire
+  Session pooler URI rather than editing the port of another connection mode.
+  Updated errors distinguish the URL, port, schema, and TLS flag without
+  displaying any credentials. Save, rebuild, and deploy after correcting them.
 - **Login fails:** use the new cloud credentials on the HTTPS hosting domain.
   Five failed attempts lock that username for 15 minutes. Redeploying does not
   reset an existing password. Password resets require a trusted management

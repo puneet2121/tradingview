@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -82,6 +83,45 @@ class CloudConfigurationTests(SimpleTestCase):
             database({"DATABASE_URL":"postgres://user:pass@db.example.com/db", "DATABASE_SSL_REQUIRE":"false"})
         data = database({"DATABASE_URL":"postgres://user:pass@postgres.railway.internal/db", "DATABASE_SSL_REQUIRE":"false"})
         self.assertEqual(data["HOST"], "postgres.railway.internal")
+
+    def test_database_errors_identify_the_invalid_setting(self):
+        url = "postgresql://user:private-test-password@aws.pooler.supabase.com:5432/postgres"
+        cases = [
+            ({"DATABASE_URL": ""}, "DATABASE_URL is missing"),
+            ({"DATABASE_URL": "   "}, "DATABASE_URL is missing"),
+            ({"DATABASE_URL": "https://private-test-project.supabase.co"}, "DATABASE_URL must start"),
+            ({"DATABASE_URL": "private-test-api-key"}, "DATABASE_URL must start"),
+            ({"DATABASE_URL": url.replace("5432", "6543")}, "Session pooler port 5432"),
+            ({"DATABASE_URL": url.replace("5432", "private-test-port")}, "DATABASE_URL is malformed"),
+            ({"DATABASE_URL": url.replace("/postgres", "")}, "DATABASE_URL must include"),
+            ({"DATABASE_SCHEMA": "public"}, "DATABASE_SCHEMA must name a private"),
+            ({"DATABASE_SSL_REQUIRE": "false"}, "DATABASE_SSL_REQUIRE must be true"),
+            ({"DATABASE_SSL_REQUIRE": "private-test-boolean"}, "DATABASE_SSL_REQUIRE must be true or false"),
+        ]
+        for overrides, message in cases:
+            with self.subTest(setting=message):
+                with self.assertRaisesRegex(ImproperlyConfigured, message) as error:
+                    database({"DATABASE_URL": url, **overrides})
+                self.assertNotIn("private-test", str(error.exception))
+                self.assertNotIn(url, str(error.exception))
+
+    def test_database_parser_errors_do_not_expose_credentials(self):
+        url = "postgresql://user:private-test-password@db.example.com/postgres"
+        with patch("trading_dashboard.cloud_config.dj_database_url.parse", side_effect=ValueError(url)):
+            with self.assertRaisesRegex(ImproperlyConfigured, "DATABASE_URL could not be parsed") as error:
+                database({"DATABASE_URL": url})
+        self.assertNotIn(url, str(error.exception))
+        self.assertTrue(error.exception.__suppress_context__)
+
+    def test_supabase_uri_with_encoded_password_and_private_schema(self):
+        password = "fake-test-p@ss/#?word%"
+        url = "postgresql://postgres.project:" + quote(password, safe="") + "@aws.pooler.supabase.com:5432/postgres"
+        data = database({"DATABASE_URL": url, "DATABASE_SCHEMA": "trading_app", "DATABASE_SSL_REQUIRE": "true"})
+        self.assertEqual(data["PASSWORD"], password)
+        self.assertEqual(data["USER"], "postgres.project")
+        self.assertEqual(data["NAME"], "postgres")
+        self.assertEqual(str(data["PORT"]), "5432")
+        self.assertEqual(data["OPTIONS"]["sslmode"], "require")
 
     def test_private_schema_and_strict_boolean(self):
         self.assertEqual(schema_name({}), "trading_app")
