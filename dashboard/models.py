@@ -1,8 +1,141 @@
 from decimal import Decimal
+import uuid
 
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
+
+
+class AlpacaPaperOrder(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account_id = models.CharField(max_length=64, db_index=True)
+    actor = models.CharField(max_length=150)
+    symbol = models.CharField(max_length=32)
+    asset_class = models.CharField(max_length=16)
+    intent = models.CharField(max_length=20)
+    phase = models.CharField(max_length=24, default="prepared", db_index=True)
+    client_order_id = models.CharField(max_length=64, unique=True)
+    broker_order_id = models.CharField(max_length=64, blank=True)
+    payload = models.JSONField(default=dict)
+    preview = models.JSONField(default=dict)
+    broker_status = models.CharField(max_length=32, blank=True)
+    filled_qty = models.DecimalField(max_digits=20, decimal_places=6, default=0)
+    filled_avg_price = models.DecimalField(max_digits=20, decimal_places=6, null=True)
+    broker_updated_at = models.DateTimeField(null=True)
+    submitted_at = models.DateTimeField(null=True)
+    filled_at = models.DateTimeField(null=True)
+    expires_at = models.DateTimeField()
+    last_checked_at = models.DateTimeField(null=True)
+    error = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(
+            fields=["account_id", "symbol"],
+            condition=models.Q(phase__in=["submitting", "working", "unknown", "cancel_pending"]),
+            name="one_active_alpaca_order_per_symbol",
+        )]
+
+
+class AlpacaOrderEvent(models.Model):
+    order = models.ForeignKey(AlpacaPaperOrder, on_delete=models.PROTECT, related_name="events")
+    actor = models.CharField(max_length=150)
+    status = models.CharField(max_length=32)
+    detail = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+
+class AlpacaBotConfig(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    enabled = models.BooleanField(default=False)
+    manage_exits = models.BooleanField(default=False)
+    account_id = models.CharField(max_length=64, blank=True)
+    armed_at = models.DateTimeField(null=True)
+    actor = models.CharField(max_length=150, blank=True)
+    min_dte = models.PositiveIntegerField(default=7)
+    lease_owner = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(default=timezone.now)
+    heartbeat_at = models.DateTimeField(null=True)
+    discord_retry_at = models.DateTimeField(null=True)
+    status = models.CharField(max_length=240, default="Not started")
+
+
+class AlpacaBotScan(models.Model):
+    strategy = models.CharField(max_length=24)
+    symbol = models.CharField(max_length=16)
+    timeframe = models.CharField(max_length=8)
+    last_bar_time = models.BigIntegerField(null=True)
+    checked_at = models.DateTimeField(null=True)
+    status = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["strategy", "symbol", "timeframe"], name="unique_alpaca_bot_scan")]
+
+
+class AlpacaBotPosition(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account_id = models.CharField(max_length=64)
+    strategy = models.CharField(max_length=24)
+    underlying = models.CharField(max_length=16)
+    timeframe = models.CharField(max_length=8)
+    symbol = models.CharField(max_length=32)
+    asset_class = models.CharField(max_length=16)
+    direction = models.CharField(max_length=8)
+    expiration = models.DateField(null=True)
+    phase = models.CharField(max_length=16, default="opening", db_index=True)
+    entry_order = models.OneToOneField(AlpacaPaperOrder, null=True, on_delete=models.PROTECT, related_name="bot_position")
+    exit_reason = models.CharField(max_length=160, blank=True)
+    status = models.CharField(max_length=240, blank=True)
+    remaining_qty = models.DecimalField(max_digits=20, decimal_places=6, default=0)
+    mark = models.DecimalField(max_digits=20, decimal_places=6, null=True)
+    pnl = models.DecimalField(max_digits=20, decimal_places=6, null=True)
+    quote_time = models.DateTimeField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    closed_at = models.DateTimeField(null=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["account_id", "symbol"], condition=models.Q(phase__in=["opening", "open", "closing", "blocked"]), name="unique_active_bot_contract"),
+            models.UniqueConstraint(fields=["account_id", "strategy", "underlying", "timeframe"], condition=models.Q(phase__in=["opening", "open", "closing", "blocked"]), name="unique_active_bot_slot"),
+        ]
+
+
+class AlpacaBotAction(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=240, unique=True)
+    account_id = models.CharField(max_length=64)
+    strategy = models.CharField(max_length=24)
+    underlying = models.CharField(max_length=16)
+    timeframe = models.CharField(max_length=8)
+    kind = models.CharField(max_length=16)
+    direction = models.CharField(max_length=8)
+    reason = models.TextField()
+    snapshot = models.JSONField(default=dict)
+    outcome = models.CharField(max_length=24, default="pending")
+    error = models.CharField(max_length=240, blank=True)
+    position = models.ForeignKey(AlpacaBotPosition, null=True, on_delete=models.PROTECT, related_name="actions")
+    order = models.OneToOneField(AlpacaPaperOrder, null=True, on_delete=models.PROTECT, related_name="bot_action")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class AlpacaBotNotice(models.Model):
+    key = models.CharField(max_length=240, unique=True)
+    message = models.TextField()
+    status = models.CharField(max_length=16, default="pending", db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    retry_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True)
+    error = models.CharField(max_length=200, blank=True)
 
 
 class MarketAlert(models.Model):

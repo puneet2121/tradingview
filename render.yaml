@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: trading-dashboard
+    runtime: python
+    plan: free
+    buildCommand: bash deploy/build.sh
+    startCommand: python deploy/start.py
+    healthCheckPath: /healthz/
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: trading_dashboard.cloud_settings
+      - key: DATABASE_URL
+        sync: false
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: CLOUD_INITIAL_PASSWORDS
+        sync: false
+      - key: SHARING_USERS
+        value: trader1,trader2,trader3,trader4
+      - key: DATABASE_SCHEMA
+        value: trading_app
+      - key: DATABASE_SSL_REQUIRE
+        value: "true"
+      - key: CLOUD_SCANNERS_ENABLED
+        value: "false"
+      - key: ALPACA_DATA_ENABLED
+        value: "false"
+      - key: ALPACA_MANUAL_PAPER_ENABLED
+        value: "false"
+      - key: DISCORD_ALERTS_ENABLED
+        value: "false"

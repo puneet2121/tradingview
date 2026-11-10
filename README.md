@@ -12,6 +12,17 @@ python -m uvicorn trading_dashboard.asgi:application --host 127.0.0.1 --port 800
 
 Open http://127.0.0.1:8000.
 
+## Private Cloud Deployment
+
+Render and Railway configurations are available with Supabase PostgreSQL,
+four private logins, and one shared paper account. Follow the
+[cloud deployment guide](docs/cloud-deployment.md) for database setup, secret
+environment variables, and your custom domain. The cloud profile starts with
+background trading and alert scanners disabled; Render Free is for temporary
+interactive testing, not unattended trading. Local history is not copied
+automatically. Never upload `.local-sharing/` or expose the local development
+settings to the internet.
+
 ## Private Ngrok Sharing (Four Users)
 
 Normal local startup above is not protected for public access. Do not tunnel port 8000. Sharing mode uses four individual Django logins, one shared paper account, HTTPS-only cookies, CSRF protection, authenticated/origin-checked WebSockets, and a 15-minute per-username lockout after five failed login attempts. It uses no paid ngrok traffic-policy features. All four users can trade, edit shared strategies, and reset the shared account; this is not a read-only or separate-account setup. Chart layouts remain browser-local. Activity currently identifies manual actions as `USER`, not by login name.
@@ -39,7 +50,7 @@ Then open the tunnel in another:
 
 Open `https://YOUR_NGROK_DOMAIN`, not `http://127.0.0.1:8003`, and sign in. The tunnel command checks that the target requires login before opening it, and disables ngrok request inspection. The backend binds only to loopback on port 8003. Set `--port 8004` on **both** commands if 8003 is occupied. Keep both terminals running; Ctrl+C in the tunnel terminal stops public access. Configure your ngrok authtoken privately on your machine if ngrok reports authentication failure. Never paste it into chat. The ngrok HTTPS service terminates TLS and forwards traffic to your local machine; this is not a private VPN.
 
-The sharing server **does not start another paper-trading scanner** by default. Keep the original local paper scanner running, or stop all other paper scanner servers and run `share.py serve --scanner` instead. Use only one paper scanner process, no reload/multiple workers. Saved-alert monitoring runs independently with a database lease. Sharing mode disables Alpaca broker execution; paper account data and configured Discord alerts remain shared. No real-money trading is enabled. Your computer must remain awake and online; ngrok is temporary access, not 24/7 hosting. Four users and frequent chart polling may exhaust ngrok's free request/bandwidth quotas quickly; check [current free-plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits). It does not improve market-data latency or licensing.
+The sharing server **does not start another paper-trading scanner** by default. Keep the original local paper scanner running, or stop all other paper scanner servers and run `share.py serve --scanner` instead. Use only one paper scanner process, no reload/multiple workers. Saved-alert monitoring runs independently with a database lease. Sharing mode disables the legacy automatic Alpaca execution hook; confirmed manual Alpaca paper tickets are separate. Paper accounts and configured Discord alerts remain shared. No real-money trading is enabled. Your computer must remain awake and online; ngrok is temporary access, not 24/7 hosting. Four users and frequent chart polling may exhaust ngrok's free request/bandwidth quotas quickly; check [current free-plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits). It does not improve market-data latency or licensing.
 
 For a lockout, wait 15 minutes or locally run `.venv/bin/python share.py manage axes_reset_username trader1`. Disable a login through a local Django shell by setting that user's `is_active=False`; access is limited to the four usernames in the ignored config file. Do not use the development `SECRET_KEY`, wildcard hosts, or `DEBUG=True` for sharing. Public static JS/CSS assets contain no account data; dashboard/API data require login.
 
@@ -52,7 +63,82 @@ The provider boundary is `dashboard/data_source.py`.
 
 To add another provider, add the provider function in `dashboard/data_source.py`, register it in `HISTORY_PROVIDERS` and/or `QUOTE_PROVIDERS`, then add symbols with that provider name to `SYMBOLS`.
 
-## Optional Alpaca Paper Orders
+## Alpaca Paper Account
+
+Configure **paper** API keys privately in a local terminal:
+
+```bash
+.venv/bin/python manage.py configure_alpaca
+```
+
+Both prompts hide input. The command verifies the paper account and IEX stock feed using GET requests, then stores the keys in the ignored, mode-600 `.local-sharing/alpaca-data.json`. Setup does not place orders, change account settings, or enable the old automatic execution hook. Manual paper orders are available only through the review/confirmation flow below. Do not put keys into `credentials.txt`, chat, browser storage, or Git. Restart your server after configuration. Existing local trades and balances are not imported or reset.
+
+For the currently running sharing server, stop and restart `share.py serve` with the same scanner flags as before. Collect updated assets with `.venv/bin/python share.py manage collectstatic --noinput`. Leave the ngrok tunnel running. Use **one ASGI process/worker** for Alpaca charts: the upstream stock socket is shared across panes and users within that process. A second dashboard server using the same keys can exceed Alpaca's connection limit.
+
+Alternative environment-only configuration (set secrets through your private environment manager, not shell history):
+
+- `ALPACA_DATA_ENABLED=true`
+- `ALPACA_DATA_API_KEY` and `ALPACA_DATA_SECRET_KEY`: paper account credentials, separate from legacy execution credentials.
+- `ALPACA_STOCK_FEED=iex` and `ALPACA_OPTION_FEED=indicative` by default.
+- Paid entitlements can use `--stock-feed sip --option-feed opra` with the setup command, or the corresponding environment variables. Unsupported entitlements produce errors; there is no silent switch to Yahoo or another feed.
+
+Run `.venv/bin/python manage.py configure_alpaca --check` to check the saved paper account/stock-feed connection without changing it. Option-chain access is verified separately when loading a chain. Set `ALPACA_DATA_ENABLED=false` and restart to return charts to their previous sources without deleting keys or trade history.
+
+The **Alpaca** button shows connection status, paper equity/cash/buying power, broker positions, the latest 50 broker orders, and the latest 100 submitted app paper orders. It refreshes every 15 seconds while open. Failed reads clear account values instead of presenting stale values as current. App orders, observed partial/final fills, cancellation requests, usernames, prices and timestamps persist in separate Alpaca tables. Broker orders placed elsewhere are visible but are not imported into the local simulator. The Alpaca option chain refreshes every 20 seconds while visible; failures explicitly label retained quotes as previous data. This cadence does not remove indicative-feed limitations.
+
+US stock charts use explicitly selected IEX or SIP history. Streamed trade prices update the ticker; candles use Alpaca's native timeframe aggregates, refreshed after minute bars and late corrections (with a periodic recovery refresh). We do not synthesize OHLCV from unfiltered trades. Native 3-minute/5-minute bars, Pacific display, drawings, indicators, and zoom are preserved. The footer distinguishes stream connection, last-trade time, and aged quotes. The default IEX stream permits at most 30 distinct symbols across connected users; repeated panes for the same stock share a subscription. Crypto and Indian feeds are unchanged.
+
+**Options > Alpaca / Paper account** shows contract bid/ask, last trade, quote timestamp, IV and supplied Greeks. Expirations are discovered through paginated contract metadata for the next three years; snapshots are paginated for the selected expiry. Missing Greeks, volume, and timestamps display `--`, not fabricated zeros. The default indicative feed has **delayed trades and modified quotes**; it is not equivalent to live OPRA. Retrieved time is not quote time. **Buy to Open** opens a separate paper ticket; clicking a chain row never submits an order. **Yahoo / Local paper** retains the original simulator and its existing trades and valuation source.
+
+Existing saved-alert and local-simulator scanners **remain on their original Yahoo/Hyperliquid sources**. Alpaca chart-driven execution is disabled, even when an old browser preference has Paper on. The separate opt-in Alpaca Strategy bot below uses Alpaca data and paper orders. MCP remains disconnected. Do not assume free IEX candles/volume match consolidated feeds, or indicative option P/L matches executable prices.
+
+### Alpaca Strategy Bot
+
+After migrating and restarting the server, open **Alpaca > Strategy bot > Start paper bot** and confirm. It starts paused by default and requires configured paper keys, options level 2, and the existing shared Discord webhook. The four sharing users control the same bot/account. No browser or chart needs to stay open; the Django server must remain running and the computer awake. One database lease coordinates the worker across server processes. Keep a single Alpaca-enabled ASGI process for the separate chart WebSocket connection.
+
+The fixed watchlist is `AAPL, MSFT, AMZN, GOOGL, META, NVDA, TSLA, IWM, SOFI, SPY, QQQ, ABNB, MCD, WMT, APP, HOOD, MU`. `ABNB` is Airbnb; `GOOGL` represents Alphabet; `IWM` is included once.
+
+- **SMA 20/50, daily:** buy 10 shares on an upward cross; close only this bot's held shares on a downward cross. A daily bar must finish first. Its signal is eligible only during the next exchange session's first 15 minutes and only if the bar closed after activation. No short shares or stock TP/SL is added.
+- **EMA 9 / session VWAP, 5m and 15m:** buy one long CALL on an upward cross, or one long PUT on a downward cross, only with volume strictly greater than the previous candle and a matching higher/lower close.
+- **EMA 9 / EMA 21, 5m and 15m:** the same volume and close confirmations. Both intraday rules evaluate the crossover and confirmations on the **same completed candle**, not an additional future confirmation candle. VWAP uses HLC3 and regular-session volume, resetting each exchange day. Opening-bar comparisons across two sessions are excluded.
+
+Intraday bars receive a 30-second completion grace. Signals older than three minutes, bars before activation, incomplete history, and quotes older than two minutes do not open orders. All bot history is split-adjusted Alpaca data using the selected stock feed; no Yahoo fallback. The worker batches history requests and checks roughly every 30 seconds. Trading and Discord dispatch are restricted to regular exchange sessions, including holidays and early closes. New entries stop two minutes before the session close.
+
+Options use the closest ATM standard 100-share contract at the nearest expiry at least **7 days** away by default. Choose **15** or **60** days while entries are paused to change future entries. The expiry search ends at 62 days or target + 14 days, whichever is later. An unquoted/expensive ATM contract is skipped, not silently replaced with a distant OTM strike. The previously requested **$1,500 premium cap** applies per contract. Entry spread limits are 20% of midpoint for options and 1% for shares; buying power and permissions are rechecked before sending.
+
+Long-option exits trigger at **+30% or -20% of the actual average entry fill**, using a fresh bid, or on a confirmed opposite crossover (exit does not require the entry volume filter). A qualifying reverse entry waits for the old position to close and expires if its signal becomes stale. The bot also attempts to close expiring options 45 minutes before the regular close on expiration day. These are **server-monitored limit exits, not guaranteed stop prices or broker-held brackets**. Gaps, shutdowns, stale quotes, rejected orders and unfilled limits can cause larger losses. Alpaca can independently exercise or liquidate expiring options.
+
+Only long positions are opened. The bot does not adopt existing holdings, does not mix strategies in the same contract, and never sells more than its confirmed fills minus confirmed exits. It stops selling and flags manual review when broker quantities change outside its own orders. Do not trade the same bot-owned symbol through another app concurrently. Pending limits are canceled after about 90 seconds; no replacement is sent until Alpaca confirms cancellation. Entry signals are not automatically resubmitted. Exits have up to five fresh attempts, then require manual review. Unknown submission status remains reserved and is looked up by its original client ID, never automatically resent.
+
+**Pause new entries** also requests cancellation of pending entries on the next worker pass; existing bot-owned positions remain monitored. Already-filled units remain held until their exit rules apply. `ALPACA_AUTO_PAPER_ENABLED=false` is the server-level kill switch and stops all bot monitoring and mutations; it does not cancel existing broker orders or liquidate positions. The legacy `ALPACA_PAPER_ENABLED` hook must remain disabled. The new bot also respects `ALPACA_MANUAL_PAPER_ENABLED=false` as an overall paper-order disable.
+
+The panel displays scanner heartbeat, per-symbol checks, entry/exit fills, bid-mark P/L with quote timestamps, and Discord history. Durable actions, positions, and notices survive restarts. Messages identify PAPER mode, strategy, ticker/timeframe, indicator/volume/close evidence, order versus actual-fill status, premiums, exit triggers, and realized P/L excluding fees. No after-hours/premarket messages are sent; undelivered notices older than 15 minutes remain in history instead of being replayed. Discord 429s are retried; uncertain delivery is not automatically repeated. Notification failure does not undo or block a broker fill.
+
+The Basic indicative options feed still contains modified quotes and delayed trades; it is not live OPRA. The bot does not change feed entitlements. See [Alpaca option quotes](https://docs.alpaca.markets/us/reference/optionlatestquotes) and [paper order types](https://docs.alpaca.markets/us/reference/postorder).
+
+### Manual Alpaca Paper Trading
+
+After updating, run `.venv/bin/python manage.py migrate`, collect sharing static assets, and restart the server. Manual order controls are enabled by default when the data connection is enabled/configured. Set `ALPACA_MANUAL_PAPER_ENABLED=false` and restart for a read-only connection. The legacy `ALPACA_PAPER_ENABLED` setting is **not required** and should remain false.
+
+1. Open **Alpaca > New paper order** for a stock/ETF, or **Options > Alpaca / Paper account > Buy to Open** for a contract.
+2. Choose a whole-unit quantity and a limit price. Only LIMIT/DAY, non-extended-hours tickets are supported. Maximum ticket quantities are 1,000 shares or 100 standard 100-share option contracts. Fractional shares, adjusted contracts, opening shorts, spreads, and bracket orders are not supported here.
+3. Select **Review paper order**. The server checks the connected paper account, asset/option permissions, buying power, existing orders, and position size. Review displays the limit value excluding fees, feed warnings and market status. A review expires after two minutes and has not yet sent any order to Alpaca.
+4. Select **Confirm paper order**. The backend rechecks account/position/permissions, then submits once to the hardcoded `https://paper-api.alpaca.markets/v2/orders` endpoint. There is no live-money URL setting for this flow. Acceptance is not a fill; the app displays actual filled quantity and broker average fill price when known.
+5. Use **Close** beside an Alpaca position to review an opposite-side closing limit ticket (partial quantities are supported). Use **Cancel** beside an active app order to request cancellation of its remaining quantity. A pending cancellation may still fill. Orders placed outside the app must be canceled in Alpaca's own dashboard.
+
+The four signed-in sharing users trade the same Alpaca paper account and can close its positions or cancel app orders. Only the user who reviewed a ticket can submit that ticket. Outside authenticated sharing mode, manual-order endpoints require loopback access; unauthenticated LAN requests are rejected. Every mutation requires CSRF validation.
+
+Each confirmed order has a stable client order ID and a durable submit state. Duplicate confirmation requests do not resend it. Ambiguous network failures remain unconfirmed and block another app order for that symbol; **Refresh order status** looks up the original ID rather than retrying a POST. If Alpaca never reports it, verify directly with Alpaca before arranging manual recovery. Do not create replacement orders based on a timeout alone. One active app order per account/symbol is enforced in the database. Close sizes are rechecked immediately before submission, but do not trade the same position concurrently through other applications, especially equity closes which have no options-style position intent.
+
+App-order fill synchronization occurs on dashboard account refresh (including after restart), not through an always-on fill worker. Up to ten unresolved orders are checked per refresh; observed events persist, but this is not a full FIFO accounting/tax ledger or a complete broker activity import. Unfilled orders do not count as positions or completed trades. Open P/L comes from Alpaca's position marks, not the indicative quote used to prefill a ticket. Local simulator risk settings and stop losses do not attach to manual Alpaca tickets. **No automatic exit is attached.** Alpaca can independently exercise or risk-liquidate expiring options; see its [options documentation](https://docs.alpaca.markets/us/docs/options-trading).
+
+The optional `integrations/alpaca-mcp.example.json` is an **uninstalled example**, not an active connection. It enables only stock-data, options-data and asset tools, with paper mode explicit. The account and trading toolsets are deliberately omitted because they include write operations. Configure actual secrets privately in your MCP client, never in this example. MCP is separate from Django and does not bypass feed entitlements or run the scanner. Verify Alpaca's account and market-data sharing permissions before distributing data to the other users.
+
+References: [Alpaca data plans](https://docs.alpaca.markets/us/docs/about-market-data-api), [stock stream](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data), [options snapshots](https://docs.alpaca.markets/us/reference/optionchain), [official MCP](https://docs.alpaca.markets/us/docs/trading-api-mcp).
+
+## Legacy Optional Alpaca Paper Orders
+
+This older automatic execution hook is separate from the manual integration above and is disabled in sharing mode. It submits orders but is **not a full broker fill-reconciliation system**. Leave it disabled while using the new connection.
 
 The app stays fully local by default. To also send generated paper trades to Alpaca Paper Trading, start the server with:
 
@@ -169,6 +255,16 @@ Rules are validated in full when saved and before signal execution. The editor r
 Supported entries are `BUY CALL` / `BUY` for a bullish EMA/VWAP cross and `BUY PUT` / `SELL` for a bearish cross. EMA periods must be 1-500. Inverse expressions such as `VWAP crosses below EMA(9)` are supported. EMA/EMA crosses, RSI conditions, OR clauses, and short-option entry instructions such as `SELL PUT` are rejected. Each direction can have one entry rule, with its own optional `AND volume is increasing` and `AND close > previous close` (buy) or `AND close < previous close` (sell). These confirmations compare the next candle with the cross candle. Conditions can follow on separate lines or inline after `AND`.
 
 Saving changed rules clears that strategy's scan checkpoints. Its next scan establishes a fresh checkpoint before accepting subsequent signals. Existing stops and option take-profit settings remain active independently of entry-rule validation.
+
+## Smart Money Dashboard
+
+Open **Smart Money** from the chart toolbar, or visit `/smart-money/`. This independent research module adds options-flow tables, premium rankings and visualizations, transaction evidence, underlying outcomes, SEC disclosures, and per-user alerts to the shared Discord destination. It never places orders or modifies existing paper positions.
+
+**Fundamental Analysis** (`/smart-money/#fundamentals`) adds Yahoo company profiles, valuation ratios, annual/quarterly financial statements, growth, margins, cash flow, debt metrics and revenue/earnings charts. Local personal research needs no Alpaca subscription or API key. Company snapshots are cached, source/report dates are visible, and unavailable values stay unavailable. Shared access requires separate Yahoo data-use permission; see the setup guide.
+
+Collection starts paused with no provider selected. Real flow requires an entitled OPRA source and storage permission; multi-user viewing and Discord require appropriate sharing rights. Indicative quotes are not presented as verified trade prints. Unsupported execution quotes, sweeps, Greeks/OI and dark-pool data are explicitly unavailable.
+
+See [Smart Money setup, capabilities and limitations](docs/smart-money.md) before enabling collection. On another installation run `.venv/bin/python manage.py migrate smart_money`, restart, and collect static files for the sharing deployment.
 
 ## Saved Pine Scripts
 

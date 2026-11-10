@@ -21,9 +21,13 @@ class SharingAuthenticationForm(AuthenticationForm):
 
 class SharingLoginMiddleware(MiddlewareMixin):
     def process_view(self, request, view_func, view_args, view_kwargs):
+        if getattr(settings, "CLOUD_DEPLOYMENT", False):
+            from .cloud_views import health
+            if view_func is health:
+                return None
         if request.resolver_match.url_name == "login":
             return None
-        if request.user.is_authenticated and request.user.get_username() in settings.SHARING_USERS:
+        if request.user.is_authenticated and request.user.is_active and request.user.get_username() in settings.SHARING_USERS:
             return None
         if request.path.startswith("/api/"):
             return JsonResponse({"error": "Sign in to continue.", "login_url": settings.LOGIN_URL}, status=401)

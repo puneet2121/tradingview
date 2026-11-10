@@ -7,11 +7,13 @@
     <title>Local Trading Dashboard</title>
     <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
     <link rel="stylesheet" href="{% static 'dashboard/alerts.css' %}">
+    <link rel="stylesheet" href="{% static 'dashboard/alpaca.css' %}">
     <script src="{% static 'vendor/lightweight-charts.standalone.production.js' %}" defer></script>
     <script src="{% static 'dashboard/chart-sessions.js' %}" defer></script>
     <script src="{% static 'dashboard/pine-scripts.js' %}" defer></script>
     <script src="{% static 'dashboard/app.js' %}" defer></script>
     <script src="{% static 'dashboard/alerts.js' %}" defer></script>
+    <script src="{% static 'dashboard/alpaca.js' %}" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -47,6 +49,8 @@
         <button type="button" id="alerts-toggle">Alerts</button>
         <button type="button" id="pine-toggle">Pine Editor</button>
         <button type="button" id="option-chain-toggle">Options</button>
+        <button type="button" id="alpaca-toggle">Alpaca</button>
+        <a class="smart-money-link" href="{% url 'smart_money:dashboard' %}">Smart Money</a>
         <button type="button" id="paper-history-toggle">History</button>
         <button type="button" id="paper-reset">Reset</button>
         {% if user.is_authenticated %}
@@ -61,6 +65,7 @@
 
     <main id="chart-grid" class="chart-grid chart-grid-4" aria-live="polite"></main>
     {% include "dashboard/alerts.html" %}
+    {% include "dashboard/alpaca.html" %}
     <dialog id="pine-editor" class="pine-editor" aria-labelledby="pine-title">
       <header class="pine-header">
         <strong id="pine-title">Pine Editor</strong>
@@ -186,19 +191,30 @@
     </aside>
     <aside class="option-chain-drawer" id="option-chain-drawer" hidden>
       <div class="option-chain-header">
-        <strong>Yahoo Option Chain</strong>
+        <strong>Option Chain</strong>
         <button type="button" id="option-chain-close">x</button>
       </div>
       <div class="option-chain-controls">
+        <select id="option-data-source" aria-label="Option data source">
+          <option value="yahoo">Yahoo / Local paper</option>
+          <option value="alpaca">Alpaca / Paper account</option>
+        </select>
         <input id="option-underlying" type="text" value="AAPL" aria-label="Option underlying symbol">
         <select id="option-expiration" aria-label="Option expiration"></select>
+        <select id="option-strike-count" aria-label="Strike range">
+          <option value="all">All strikes</option>
+          <option value="20">20 nearest strikes</option>
+          <option value="40">40 nearest strikes</option>
+          <option value="80">80 nearest strikes</option>
+        </select>
+        <button type="button" id="option-at-money" disabled>At the money</button>
         <input id="option-quantity" type="number" min="1" max="1000" value="1" aria-label="Option paper quantity">
         <button type="button" id="option-chain-refresh">Refresh</button>
       </div>
       <div class="option-chain-summary" id="option-chain-summary">No chain loaded</div>
       <div class="option-chain-content">
         <section>
-          <h2>Calls</h2>
+          <h2>Calls <span id="option-call-count"></span></h2>
           <div class="option-chain-table-wrap">
             <table class="option-chain-table">
               <thead>
@@ -210,6 +226,10 @@
                   <th>IV</th>
                   <th>Delta</th>
                   <th>Theta</th>
+                  <th>Gamma</th>
+                  <th>Vega</th>
+                  <th>Rho</th>
+                  <th>Quote time</th>
                   <th>Vol</th>
                   <th></th>
                 </tr>
@@ -219,7 +239,7 @@
           </div>
         </section>
         <section>
-          <h2>Puts</h2>
+          <h2>Puts <span id="option-put-count"></span></h2>
           <div class="option-chain-table-wrap">
             <table class="option-chain-table">
               <thead>
@@ -231,6 +251,10 @@
                   <th>IV</th>
                   <th>Delta</th>
                   <th>Theta</th>
+                  <th>Gamma</th>
+                  <th>Vega</th>
+                  <th>Rho</th>
+                  <th>Quote time</th>
                   <th>Vol</th>
                   <th></th>
                 </tr>
@@ -241,7 +265,7 @@
         </section>
       </div>
       <div class="option-paper-header">
-        <strong>Option Paper Trades</strong>
+        <strong>Local Option Paper Trades / Yahoo</strong>
         <button type="button" data-open-activity>Activity</button>
         <button type="button" id="option-paper-reset">Reset</button>
       </div>
