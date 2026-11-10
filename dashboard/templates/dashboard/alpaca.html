@@ -1,0 +1,63 @@
+<dialog id="alpaca-dialog" class="alpaca-dialog" aria-labelledby="alpaca-title">
+  <header class="alpaca-header">
+    <strong id="alpaca-title">Alpaca Paper Account</strong>
+    <span class="alpaca-mode" id="alpaca-mode">Paper only</span>
+    <form method="dialog"><button type="submit" aria-label="Close Alpaca account" title="Close">x</button></form>
+  </header>
+  <div class="alpaca-tabs" role="tablist" aria-label="Alpaca views">
+    <button type="button" id="alpaca-account-tab" role="tab" aria-selected="true" aria-controls="alpaca-account-view">Account</button>
+    <button type="button" id="alpaca-bot-tab" role="tab" aria-selected="false" aria-controls="alpaca-bot-view" tabindex="-1">Strategy bot</button>
+  </div>
+  <div class="alpaca-body">
+    <div id="alpaca-account-view" role="tabpanel" aria-labelledby="alpaca-account-tab">
+    <div class="alpaca-status-row"><span id="alpaca-status" role="status">Not checked</span><div class="alpaca-actions"><button type="button" id="alpaca-new-order" disabled>New paper order</button><button type="button" id="alpaca-refresh">Refresh</button></div></div>
+    <dl class="alpaca-metrics" id="alpaca-metrics"></dl>
+    <dl class="alpaca-feeds" id="alpaca-feeds"></dl>
+    <section>
+      <h2>Positions</h2>
+      <div class="alpaca-table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Entry fill</th><th>Mark</th><th>Open P/L</th><th></th></tr></thead><tbody id="alpaca-positions"></tbody></table></div>
+    </section>
+    <section>
+      <h2>App Paper Orders <span>Last 100 / Shared account</span></h2>
+      <p id="alpaca-sync-warning" class="alpaca-warning" role="status"></p>
+      <div class="alpaca-table-wrap"><table class="alpaca-order-table"><thead><tr><th>Symbol / User</th><th>Action</th><th>Filled / Qty</th><th>Limit</th><th>Average fill</th><th>Status</th><th>Submitted / Filled (Pacific)</th><th></th></tr></thead><tbody id="alpaca-app-orders"></tbody></table></div>
+    </section>
+    <section>
+      <h2>Recent Orders <span>Last 50</span></h2>
+      <div class="alpaca-table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Filled / Qty</th><th>Average fill</th><th>Status</th><th>Submitted (Pacific)</th></tr></thead><tbody id="alpaca-orders"></tbody></table></div>
+    </section>
+    </div>
+    <div id="alpaca-bot-view" role="tabpanel" aria-labelledby="alpaca-bot-tab" hidden>
+      <div class="alpaca-status-row"><span id="alpaca-bot-status" role="status">Not checked</span><div class="alpaca-actions"><button type="button" id="alpaca-bot-refresh">Refresh</button><button type="button" id="alpaca-bot-start" disabled>Start paper bot</button><button type="button" id="alpaca-bot-pause" disabled>Pause new entries</button></div></div>
+      <dl class="alpaca-feeds" id="alpaca-bot-settings"></dl>
+      <label class="alpaca-bot-expiry">Minimum days to expiry <select id="alpaca-bot-dte"><option value="7">7 days</option><option value="15">15 days</option><option value="60">60 days</option></select></label>
+      <p class="alpaca-warning">Paper only. Option exits: +30% / -20% of actual fill, or opposite crossover. Exits require a running server and fresh quotes; limit orders may not fill. Pausing entries keeps existing bot exits active. Manual holdings are excluded.</p>
+      <section><h2>Strategies</h2><div class="alpaca-table-wrap"><table class="alpaca-bot-strategies"><thead><tr><th>Strategy</th><th>Bars</th><th>Entry size</th><th>Rules</th></tr></thead><tbody id="alpaca-bot-presets"></tbody></table></div></section>
+      <section><h2>Bot Positions <span>Broker fills / bid marks / P&amp;L excluding fees</span></h2><div class="alpaca-table-wrap"><table class="alpaca-bot-position-table"><thead><tr><th>Symbol / Strategy</th><th>Direction</th><th>Held</th><th>Entry fill</th><th>Exit fill</th><th>Bid mark</th><th>P/L</th><th>Quote (Pacific)</th><th>Status</th></tr></thead><tbody id="alpaca-bot-positions"></tbody></table></div></section>
+      <details class="alpaca-bot-details"><summary>Scanner checks</summary><div class="alpaca-table-wrap"><table><thead><tr><th>Strategy / Symbol</th><th>Bars</th><th>Status</th><th>Checked (Pacific)</th></tr></thead><tbody id="alpaca-bot-scans"></tbody></table></div></details>
+      <details class="alpaca-bot-details"><summary>Discord history</summary><div id="alpaca-bot-notices"></div></details>
+    </div>
+  </div>
+</dialog>
+<dialog id="alpaca-ticket" class="alpaca-dialog alpaca-ticket" aria-labelledby="alpaca-ticket-title">
+  <header class="alpaca-header"><strong id="alpaca-ticket-title">Alpaca Paper Order</strong><span class="alpaca-mode">Simulated funds</span><button type="button" id="alpaca-ticket-close" aria-label="Close order ticket" title="Close">x</button></header>
+  <div class="alpaca-body">
+    <form id="alpaca-ticket-form">
+      <fieldset id="alpaca-ticket-fields">
+        <label>Asset<select id="alpaca-ticket-asset"><option value="us_equity">Stock / ETF</option><option value="us_option">Option contract</option></select></label>
+        <label>Action<select id="alpaca-ticket-action"><option value="buy">Buy to open</option><option value="close">Close position</option></select></label>
+        <label class="alpaca-ticket-symbol">Symbol<input id="alpaca-ticket-symbol" required maxlength="32" autocomplete="off" spellcheck="false"></label>
+        <label>Quantity<input id="alpaca-ticket-quantity" type="number" min="1" max="1000" step="1" value="1" required></label>
+        <label>Limit price / unit (USD)<input id="alpaca-ticket-limit" type="number" min="0.0001" max="1000000" step="any" required></label>
+      </fieldset>
+      <div class="alpaca-order-meta"><span>Limit / DAY / Regular hours</span><span id="alpaca-ticket-reference"></span></div>
+      <button type="submit" id="alpaca-review-order">Review paper order</button>
+    </form>
+    <section id="alpaca-confirmation" hidden>
+      <dl class="alpaca-feeds" id="alpaca-order-summary"></dl>
+      <p class="alpaca-warning" id="alpaca-order-warning"></p>
+      <div class="alpaca-actions"><button type="button" id="alpaca-edit-order">Edit</button><button type="button" id="alpaca-confirm-order">Confirm paper order</button><button type="button" id="alpaca-check-order" hidden>Refresh order status</button></div>
+    </section>
+    <p id="alpaca-ticket-status" role="status"></p>
+  </div>
+</dialog>

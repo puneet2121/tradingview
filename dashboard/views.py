@@ -9,8 +9,10 @@ from django.views.decorators.http import require_http_methods
 
 from .data_source import (
     available_config,
-    get_history,
-    get_quote,
+    get_chart_history,
+    get_chart_quote,
+    get_chart_symbol,
+    validate_alpaca_symbol,
     get_symbol,
     get_timeframe,
     normalize_symbol,
@@ -36,6 +38,7 @@ from .options_paper import (
 )
 from .strategy_engine import save_strategy, strategy_state
 from .trade_activity import activity_page
+from .alpaca import AlpacaDataError
 
 
 @require_GET
@@ -79,7 +82,8 @@ def history(request):
     try:
         get_symbol(symbol)
         get_timeframe(timeframe)
-        return JsonResponse({"symbol": symbol, "timeframe": timeframe, "bars": get_history(symbol, timeframe)})
+        item = get_chart_symbol(symbol)
+        return JsonResponse({"symbol": item.value, "timeframe": timeframe, "provider": item.provider, "bars": get_chart_history(symbol, timeframe)})
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -91,7 +95,7 @@ def quote(request):
     symbol = request.GET.get("symbol", "")
     try:
         get_symbol(symbol)
-        return JsonResponse(get_quote(symbol))
+        return JsonResponse(get_chart_quote(symbol))
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -104,9 +108,11 @@ def symbol(request):
     market = request.GET.get("market", "us")
     try:
         normalized = normalize_symbol(raw_symbol, market)
-        symbol_config = get_symbol(normalized)
+        symbol_config = get_chart_symbol(normalized)
         if symbol_config.provider == "yfinance":
             validate_symbol_has_data(symbol_config.value)
+        elif symbol_config.provider == "alpaca":
+            validate_alpaca_symbol(symbol_config.value)
         return JsonResponse(
             {
                 "value": symbol_config.value,
@@ -118,6 +124,8 @@ def symbol(request):
         )
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
+    except AlpacaDataError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
 
 
 @require_GET

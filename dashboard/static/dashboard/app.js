@@ -106,6 +106,11 @@ const optionExpiration = document.querySelector("#option-expiration");
 const optionQuantity = document.querySelector("#option-quantity");
 const optionChainRefresh = document.querySelector("#option-chain-refresh");
 const optionChainSummary = document.querySelector("#option-chain-summary");
+const optionDataSource = document.querySelector("#option-data-source");
+const optionStrikeCount = document.querySelector("#option-strike-count");
+const optionAtMoney = document.querySelector("#option-at-money");
+let optionRequestVersion = 0;
+let optionRefreshBusy = false;
 const optionCalls = document.querySelector("#option-calls");
 const optionPuts = document.querySelector("#option-puts");
 const optionPaperList = document.querySelector("#option-paper-list");
@@ -257,6 +262,9 @@ function formatPrice(value) {
 
 function providerFor(symbol) {
   const symbolConfig = state.config.symbols.find((item) => item.value === symbol);
+  if (symbolConfig && ["yfinance", "alpaca"].includes(symbolConfig.provider)) {
+    return state.config.alpaca && state.config.alpaca.enabled && /^[A-Z][A-Z0-9.-]{0,14}$/.test(symbol) && !/\.(NS|BO)$/.test(symbol) ? "alpaca" : "yfinance";
+  }
   return symbolConfig ? symbolConfig.provider : undefined;
 }
 
@@ -535,7 +543,10 @@ function buildPane(index) {
   timezoneLabel.className = "chart-timezone";
   timezoneLabel.textContent = "Pacific";
   timezoneLabel.title = "America/Los_Angeles (PST/PDT)";
-  footer.append(legend, timezoneLabel);
+  const feedStatus = document.createElement("span");
+  feedStatus.className = "pane-feed-status";
+  pane.feedStatus = feedStatus;
+  footer.append(legend, feedStatus, timezoneLabel);
   root.append(header, chartShell, footer);
   grid.append(root);
 
@@ -709,7 +720,7 @@ function initChart(pane) {
 
 function hasUSSessionShading(pane) {
   const config = state.config.symbols.find((item) => item.value === pane.symbol);
-  return config && config.provider === "yfinance" && ["US", "NASDAQ", "NYSE", "NYSE Arca"].includes(config.exchange)
+  return config && ["yfinance", "alpaca"].includes(providerFor(pane.symbol)) && ["US", "NASDAQ", "NYSE", "NYSE Arca"].includes(config.exchange)
     && /^[A-Z][A-Z0-9-]*$/.test(pane.symbol) && /[mh]$/.test(pane.timeframe);
 }
 
@@ -918,10 +929,10 @@ function renderDrawingChips(pane) {
 
 async function fetchHistory(symbol, timeframe) {
   const response = await fetch(`/api/history/?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
-  if (!response.ok) {
-    throw new Error(`History request failed: ${response.status}`);
-  }
   const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || `History request failed: ${response.status}`);
+  }
   return payload.bars || [];
 }
 
@@ -1259,7 +1270,8 @@ async function saveStrategyForm() {
 }
 
 async function fetchOptionExpirations(symbol) {
-  const response = await fetch(`/api/options/expirations/?symbol=${encodeURIComponent(symbol)}`);
+  const prefix = optionDataSource.value === "alpaca" ? "/api/alpaca/options" : "/api/options";
+  const response = await fetch(`${prefix}/expirations/?symbol=${encodeURIComponent(symbol)}`);
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || `Option expirations failed: ${response.status}`);
@@ -1272,7 +1284,8 @@ async function fetchOptionChain(symbol, expiration) {
   if (expiration) {
     params.set("expiration", expiration);
   }
-  const response = await fetch(`/api/options/chain/?${params.toString()}`);
+  const prefix = optionDataSource.value === "alpaca" ? "/api/alpaca/options" : "/api/options";
+  const response = await fetch(`${prefix}/chain/?${params.toString()}`);
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || `Option chain failed: ${response.status}`);
@@ -1288,13 +1301,33 @@ async function fetchOptionPaperState() {
   return response.json();
 }
 
+function updateOptionSourceLayout() {
+  const isAlpaca = optionDataSource.value === "alpaca";
+  optionChainDrawer.classList.toggle("alpaca-chain", isAlpaca);
+  optionChainDrawer.querySelector(".option-paper-header").hidden = isAlpaca;
+  optionPaperList.hidden = isAlpaca;
+  optionQuantity.disabled = isAlpaca;
+  optionQuantity.hidden = isAlpaca;
+}
+
+function clearOptionChain() {
+  state.optionChain = null;
+  optionCalls.replaceChildren();
+  optionPuts.replaceChildren();
+  optionAtMoney.disabled = true;
+  document.querySelector("#option-call-count").textContent = "";
+  document.querySelector("#option-put-count").textContent = "";
+}
+
 async function loadOptionExpirations(selectedExpiration = "") {
   const symbol = optionUnderlying.value.trim().toUpperCase();
+  const source = optionDataSource.value;
   if (!symbol) {
     return;
   }
   optionChainSummary.textContent = "Loading expirations...";
   const expirations = await fetchOptionExpirations(symbol);
+  if (symbol !== optionUnderlying.value.trim().toUpperCase() || source !== optionDataSource.value) return;
   optionExpiration.replaceChildren();
   expirations.forEach((expiration) => {
     const option = document.createElement("option");
@@ -1306,41 +1339,82 @@ async function loadOptionExpirations(selectedExpiration = "") {
     optionExpiration.append(option);
   });
   if (!expirations.length) {
-    optionChainSummary.textContent = `No Yahoo options found for ${symbol}`;
+    optionChainSummary.textContent = `No options found for ${symbol}`;
   }
 }
 
-async function loadOptionChain() {
+async function loadOptionChain(options = {}) {
+  const version = ++optionRequestVersion;
+  const source = optionDataSource.value;
   const symbol = optionUnderlying.value.trim().toUpperCase();
   if (!symbol) {
     window.alert("Enter an underlying symbol.");
     return;
   }
   optionUnderlying.value = symbol;
-  optionCalls.replaceChildren();
-  optionPuts.replaceChildren();
-  optionChainSummary.textContent = "Loading option chain...";
+  const previous = state.optionChain;
+  const sameChain = previous && previous.symbol === symbol && previous.expiration === optionExpiration.value
+    && (previous.source === "Alpaca") === (source === "alpaca");
+  if (!sameChain) clearOptionChain();
+  if (!options.quiet) {
+    optionChainSummary.textContent = "Loading option chain...";
+  }
   if (!optionExpiration.options.length) {
     await loadOptionExpirations();
   }
+  if (version !== optionRequestVersion || source !== optionDataSource.value || symbol !== optionUnderlying.value.trim().toUpperCase()) return;
   const chain = await fetchOptionChain(symbol, optionExpiration.value);
+  if (version !== optionRequestVersion || source !== optionDataSource.value || symbol !== optionUnderlying.value.trim().toUpperCase()) return;
   state.optionChain = chain;
-  renderOptionChain(chain);
+  renderOptionChain(chain, { center: !sameChain });
 }
 
-function renderOptionChain(chain) {
+function renderOptionChain(chain, { center = false } = {}) {
+  const calls = chain.calls || [];
+  const puts = chain.puts || [];
+  const strikes = [...new Set(calls.concat(puts).map((contract) => contract.strike)
+    .filter((strike) => Number.isFinite(strike) && strike > 0))].sort((a, b) => a - b);
+  const hasPrice = Number.isFinite(chain.underlying_price) && chain.underlying_price > 0;
+  const nearest = hasPrice ? strikes.slice().sort((a, b) => Math.abs(a - chain.underlying_price) - Math.abs(b - chain.underlying_price) || a - b) : [];
+  const count = Number.parseInt(optionStrikeCount.value, 10);
+  const visibleStrikes = hasPrice && Number.isFinite(count) ? new Set(nearest.slice(0, count)) : null;
+  const visibleCalls = visibleStrikes ? calls.filter((contract) => visibleStrikes.has(contract.strike)) : calls;
+  const visiblePuts = visibleStrikes ? puts.filter((contract) => visibleStrikes.has(contract.strike)) : puts;
+  const range = strikes.length ? ` | Strikes ${formatPrice(strikes[0])} - ${formatPrice(strikes[strikes.length - 1])}` : "";
   optionChainSummary.textContent = `${chain.symbol} ${chain.expiration} | Underlying ${formatPrice(
     chain.underlying_price,
-  )} | Source ${chain.source} | ${formatPaperTime(chain.updated_at)}`;
-  renderOptionContracts(optionCalls, chain.calls || []);
-  renderOptionContracts(optionPuts, chain.puts || []);
+  )}${range} | ${chain.source}${chain.feed_label ? " / " + chain.feed_label : " / Local paper"} | Retrieved ${formatPaperTime(chain.updated_at)}`;
+  document.querySelector("#option-call-count").textContent = `${visibleCalls.length} / ${calls.length}`;
+  document.querySelector("#option-put-count").textContent = `${visiblePuts.length} / ${puts.length}`;
+  optionAtMoney.disabled = !nearest.length;
+  renderOptionContracts(optionCalls, visibleCalls, chain.underlying_price);
+  renderOptionContracts(optionPuts, visiblePuts, chain.underlying_price);
+  if (center) centerOptionStrikes();
 }
 
-function renderOptionContracts(target, contracts) {
+function centerOptionStrikes() {
+  [optionCalls, optionPuts].forEach((target) => {
+    const row = target.querySelector(".at-money");
+    if (!row) return;
+    const wrapper = target.closest(".option-chain-table-wrap");
+    wrapper.scrollTop += row.getBoundingClientRect().top - wrapper.getBoundingClientRect().top - (wrapper.clientHeight - row.offsetHeight) / 2;
+  });
+}
+
+function renderOptionContracts(target, contracts, underlyingPrice) {
+  const wrapper = target.closest(".option-chain-table-wrap");
+  const scrollTop = wrapper.scrollTop;
+  const scrollLeft = wrapper.scrollLeft;
+  const nearest = Number.isFinite(underlyingPrice) && underlyingPrice > 0
+    ? contracts.filter((contract) => Number.isFinite(contract.strike) && contract.strike > 0)
+      .sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice) || a.strike - b.strike)[0]
+    : null;
   target.replaceChildren();
-  contracts.forEach((contract) => {
+  contracts.slice().sort((a, b) => a.strike - b.strike).forEach((contract) => {
     const row = document.createElement("tr");
     row.classList.toggle("in-money", contract.in_the_money);
+    row.classList.toggle("at-money", Boolean(nearest && contract.strike === nearest.strike));
+    row.dataset.strike = contract.strike;
 
     [
       formatPrice(contract.strike),
@@ -1350,7 +1424,11 @@ function renderOptionContracts(target, contracts) {
       formatPercent(contract.iv),
       formatMetric(contract.delta),
       formatMetric(contract.theta),
-      String(contract.volume || 0),
+      formatMetric(contract.gamma),
+      formatMetric(contract.vega),
+      formatMetric(contract.rho),
+      formatPaperTime(contract.quote_time),
+      contract.volume == null ? "--" : String(contract.volume),
     ].forEach((value) => {
       const cell = document.createElement("td");
       cell.textContent = value;
@@ -1358,6 +1436,28 @@ function renderOptionContracts(target, contracts) {
     });
 
     const actionCell = document.createElement("td");
+    row.title = `${contract.contract_symbol} | Last trade: ${formatPaperTime(contract.trade_time)}`;
+    if (state.optionChain.source === "Alpaca" && !state.optionChain.read_only) {
+      const buy = document.createElement("button");
+      buy.type = "button";
+      buy.textContent = "Buy to Open";
+      buy.title = "Review an Alpaca paper limit order";
+      buy.addEventListener("click", () => window.AlpacaTrading.openTicket({
+        symbol: contract.contract_symbol, asset_class: "us_option", action: "buy", quantity: 1,
+        limit_price: contract.ask || contract.mid || "", quote_time: contract.quote_time,
+      }));
+      actionCell.append(buy);
+      row.append(actionCell);
+      target.append(row);
+      return;
+    }
+    if (state.optionChain.read_only) {
+      actionCell.textContent = "Read only";
+      actionCell.className = "read-only-contract";
+      row.append(actionCell);
+      target.append(row);
+      return;
+    }
     const buy = document.createElement("button");
     buy.type = "button";
     buy.textContent = "Buy to Open";
@@ -1372,9 +1472,21 @@ function renderOptionContracts(target, contracts) {
     row.append(actionCell);
     target.append(row);
   });
+  if (!contracts.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 13;
+    cell.textContent = "No contracts for this selection";
+    row.append(cell);
+    target.append(row);
+  }
+  wrapper.scrollTop = scrollTop;
+  wrapper.scrollLeft = scrollLeft;
 }
 
 async function openManualOptionTrade(contract, side) {
+  if (!state.optionChain || state.optionChain.read_only || optionDataSource.value === "alpaca") return;
+  if (state.optionChain.symbol !== optionUnderlying.value.trim().toUpperCase() || state.optionChain.expiration !== optionExpiration.value) return;
   try {
     if (
       side === "SHORT" &&
@@ -1527,10 +1639,14 @@ function ensureTesting1Indicator(pane) {
 }
 
 function setPaperEnabled(pane, enabled) {
+  const readOnly = providerFor(pane.symbol) === "alpaca";
+  enabled = enabled && !readOnly;
   pane.paperEnabled = enabled;
+  pane.paperButton.disabled = readOnly;
+  pane.paperButton.title = readOnly ? "Use an Alpaca paper order ticket; chart-driven trading is disabled" : "Local paper trading";
   pane.paperButton.textContent = enabled ? "Paper on" : "Paper off";
   pane.paperButton.classList.toggle("active", enabled);
-  pane.paperStatus.textContent = enabled ? "2% risk" : "";
+  pane.paperStatus.textContent = readOnly ? "Chart trading disabled" : enabled ? "2% risk" : "";
 }
 
 function togglePaperTrading(pane) {
@@ -1573,7 +1689,7 @@ function signalOrderPayload(pane, signal) {
 }
 
 async function processPaperTrading(pane) {
-  if (!pane.paperEnabled || !pane.bars.length) {
+  if (providerFor(pane.symbol) === "alpaca" || !pane.paperEnabled || !pane.bars.length) {
     return;
   }
   if (pane.paperBusy) {
@@ -1655,6 +1771,9 @@ async function addCustomSymbol(pane) {
 }
 
 function stopPaneFeed(pane) {
+  pane.feedGeneration = (pane.feedGeneration || 0) + 1;
+  window.clearTimeout(pane.reconnectTimer);
+  window.clearTimeout(pane.feedRefreshTimer);
   if (pane.socket) {
     pane.socket.close();
     pane.socket = null;
@@ -1775,7 +1894,10 @@ function updateBar(pane, bar) {
 }
 
 async function loadInitialHistory(pane, options = {}) {
-  setBars(pane, await fetchHistory(pane.symbol, pane.timeframe), options);
+  const generation = pane.feedGeneration;
+  const bars = await fetchHistory(pane.symbol, pane.timeframe);
+  if (pane.destroyed || generation !== pane.feedGeneration) return;
+  setBars(pane, bars, options);
   if (options.restoreDrawings) {
     restoreDrawingLevels(pane);
   }
@@ -1791,6 +1913,7 @@ function startHyperliquidFeed(pane) {
   });
 
   socket.addEventListener("message", (event) => {
+    if (pane.socket !== socket || pane.destroyed) return;
     const payload = JSON.parse(event.data);
     if (payload.type !== "bar") {
       return;
@@ -1801,16 +1924,25 @@ function startHyperliquidFeed(pane) {
 
 function startYfinanceFeed(pane) {
   let isFirstPoll = true;
+  let busy = false;
+  const generation = pane.feedGeneration;
   const poll = async () => {
+    if (busy || pane.destroyed || generation !== pane.feedGeneration) return;
+    busy = true;
     try {
       await loadInitialHistory(pane, { fit: isFirstPoll, restoreDrawings: isFirstPoll });
+      if (pane.destroyed || generation !== pane.feedGeneration) return;
       isFirstPoll = false;
       const quote = await fetchQuote(pane.symbol);
+      if (pane.destroyed || generation !== pane.feedGeneration) return;
       if (quote && quote.price !== null && quote.price !== undefined) {
         setTicker(pane, pane.symbol, quote.price);
       }
+      pane.feedStatus.textContent = "Yahoo / Polled";
     } catch (error) {
-      setTicker(pane, pane.symbol, null);
+      if (!pane.destroyed && generation === pane.feedGeneration) pane.feedStatus.textContent = error.message;
+    } finally {
+      busy = false;
     }
   };
   poll();
@@ -1819,18 +1951,111 @@ function startYfinanceFeed(pane) {
 
 async function startPaneFeed(pane) {
   stopPaneFeed(pane);
+  const generation = pane.feedGeneration;
   PineScripts.resetPane(pane);
   pane.lastPrice = null;
   pane.processedPaperSignals.clear();
   pane.symbolEl.textContent = symbolLabel(pane.symbol);
   pane.priceEl.textContent = "--";
+  pane.feedStatus.classList.remove("error");
+  setPaperEnabled(pane, localStorage.getItem(PAPER_ENABLED_STORAGE_KEY) === "true");
+  setBars(pane, [], { fit: true });
 
-  if (providerFor(pane.symbol) === "hyperliquid") {
-    await loadInitialHistory(pane, { fit: true, restoreDrawings: true });
-    startHyperliquidFeed(pane);
+  if (providerFor(pane.symbol) === "alpaca") {
+    startAlpacaFeed(pane);
+  } else if (providerFor(pane.symbol) === "hyperliquid") {
+    pane.feedStatus.textContent = "Hyperliquid";
+    try {
+      await loadInitialHistory(pane, { fit: true, restoreDrawings: true });
+      if (!pane.destroyed && generation === pane.feedGeneration) startHyperliquidFeed(pane);
+    } catch (error) {
+      if (!pane.destroyed && generation === pane.feedGeneration) pane.feedStatus.textContent = error.message;
+    }
   } else {
+    pane.feedStatus.textContent = "Yahoo / Polled";
     startYfinanceFeed(pane);
   }
+}
+
+function startAlpacaFeed(pane) {
+  const generation = pane.feedGeneration;
+  const valid = () => !pane.destroyed && pane.feedGeneration === generation;
+  const feed = state.config.alpaca.stock_label;
+  let first = true;
+  let busy = false;
+  let latestQuote = null;
+  let streamStatus = "Connecting";
+  let streamError = false;
+  let historyError = "";
+  let retry = 1000;
+  function label() {
+    if (!valid()) return;
+    const quoteAge = latestQuote ? Date.now() / 1000 - latestQuote.time : Infinity;
+    pane.feedStatus.textContent = `Alpaca ${feed} / ${historyError || streamStatus}${latestQuote ? " / Last trade " + formatPaperTime(latestQuote.time) : ""}${latestQuote && quoteAge > 120 ? " / Quote aged" : ""}`;
+    pane.feedStatus.title = "Trade prices stream continuously. Candles use Alpaca aggregates and refresh after minute bars and corrections. Read-only chart feed.";
+    pane.feedStatus.classList.toggle("error", Boolean(historyError) || streamError);
+  }
+  async function refresh() {
+    if (!valid() || busy) return;
+    busy = true;
+    try {
+      const bars = await fetchHistory(pane.symbol, pane.timeframe);
+      if (!valid()) return;
+      setBars(pane, bars, { fit: first, restoreDrawings: first });
+      if (first) restoreDrawingLevels(pane);
+      first = false;
+      historyError = bars.length ? "" : "No bars available";
+      const quote = await fetchQuote(pane.symbol);
+      if (!valid()) return;
+      if (quote && quote.time && (!latestQuote || latestQuote.time < quote.time)) latestQuote = quote;
+      if (latestQuote && latestQuote.price != null) setTicker(pane, pane.symbol, latestQuote.price);
+    } catch (error) {
+      historyError = error.message;
+    } finally {
+      busy = false;
+      label();
+    }
+  }
+  function scheduleRefresh() {
+    window.clearTimeout(pane.feedRefreshTimer);
+    pane.feedRefreshTimer = window.setTimeout(refresh, 2200);
+  }
+  function connect() {
+    if (!valid()) return;
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${scheme}://${window.location.host}/ws/alpaca/`);
+    pane.socket = socket;
+    socket.addEventListener("open", () => socket.send(JSON.stringify({ symbol: pane.symbol })));
+    socket.addEventListener("message", (event) => {
+      if (!valid() || pane.socket !== socket) return;
+      const data = JSON.parse(event.data);
+      if (data.type === "quote") {
+        if (!latestQuote || latestQuote.time <= data.time) {
+          latestQuote = data;
+          setTicker(pane, pane.symbol, data.price);
+        }
+      } else if (data.type === "refresh") scheduleRefresh();
+      else if (data.type === "status") {
+        streamStatus = data.status === "connected" ? "Streaming" : "Reconnecting";
+        streamError = data.status !== "connected";
+        if (data.status === "connected") { retry = 1000; scheduleRefresh(); }
+        if (data.message) streamStatus = data.message;
+      } else if (data.type === "error") { streamStatus = data.message; streamError = true; }
+      label();
+    });
+    socket.addEventListener("close", () => {
+      if (!valid()) return;
+      streamStatus = "Reconnecting";
+      streamError = true;
+      label();
+      pane.reconnectTimer = window.setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 30000);
+    });
+  }
+  label();
+  refresh();
+  connect();
+  pane.pollTimer = window.setInterval(() => { label(); refresh(); }, 60000);
 }
 
 function nextIndicatorColor(pane) {
@@ -3006,6 +3231,8 @@ async function boot() {
   }, 10000);
   const response = await fetch("/api/config/");
   state.config = await response.json();
+  if (state.config.alpaca && state.config.alpaca.enabled) optionDataSource.value = "alpaca";
+  updateOptionSourceLayout();
   await PineScripts.load();
   loadCustomSymbols();
   await syncPaperState();
@@ -3062,7 +3289,7 @@ async function boot() {
   });
   optionChainToggle.addEventListener("click", async () => {
     optionChainDrawer.hidden = false;
-    await syncOptionPaperState();
+    if (optionDataSource.value !== "alpaca") await syncOptionPaperState();
     if (!state.optionChain) {
       try {
         await loadOptionChain();
@@ -3071,6 +3298,25 @@ async function boot() {
       }
     }
   });
+  optionDataSource.addEventListener("change", async () => {
+    optionRequestVersion += 1;
+    clearOptionChain();
+    optionExpiration.replaceChildren();
+    updateOptionSourceLayout();
+    try { await loadOptionChain(); } catch (error) { optionChainSummary.textContent = error.message; }
+    if (optionDataSource.value !== "alpaca") await syncOptionPaperState();
+  });
+  optionStrikeCount.addEventListener("change", () => {
+    if (state.optionChain) renderOptionChain(state.optionChain, { center: true });
+  });
+  optionAtMoney.addEventListener("click", centerOptionStrikes);
+  window.setInterval(async () => {
+    if (optionChainDrawer.hidden || document.hidden || optionDataSource.value !== "alpaca" || !state.optionChain || optionRefreshBusy) return;
+    optionRefreshBusy = true;
+    try { await loadOptionChain({ quiet: true }); }
+    catch (error) { if (optionDataSource.value === "alpaca") optionChainSummary.textContent = `Refresh failed / Previous quotes retained / ${error.message}`; }
+    finally { optionRefreshBusy = false; }
+  }, 20000);
   optionChainClose.addEventListener("click", () => {
     optionChainDrawer.hidden = true;
   });
@@ -3086,8 +3332,12 @@ async function boot() {
     }
   });
   optionUnderlying.addEventListener("change", async () => {
+    optionRequestVersion += 1;
+    clearOptionChain();
+    optionExpiration.replaceChildren();
     try {
       await loadOptionExpirations();
+      await loadOptionChain();
     } catch (error) {
       optionChainSummary.textContent = error.message;
     }
@@ -3102,7 +3352,7 @@ async function boot() {
   optionChainRefresh.addEventListener("click", async () => {
     try {
       await loadOptionChain();
-      await syncOptionPaperState();
+      if (optionDataSource.value !== "alpaca") await syncOptionPaperState();
     } catch (error) {
       window.alert(error.message);
     }

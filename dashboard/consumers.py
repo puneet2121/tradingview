@@ -13,7 +13,11 @@ from .data_source import (
     get_symbol,
     get_timeframe,
     normalize_hyperliquid_candle,
+    get_chart_symbol,
+    validate_alpaca_symbol,
 )
+from . import alpaca
+from .alpaca_stream import stock_stream
 
 
 class HyperliquidCandleConsumer(AsyncWebsocketConsumer):
@@ -91,3 +95,40 @@ class HyperliquidCandleConsumer(AsyncWebsocketConsumer):
 
     async def send_json(self, content):
         await self.send(text_data=json.dumps(content))
+
+
+class AlpacaStockConsumer(HyperliquidCandleConsumer):
+    async def connect(self):
+        self.queue = None
+        await super().connect()
+
+    async def disconnect(self, close_code):
+        await super().disconnect(close_code)
+        if self.queue is not None:
+            await stock_stream.unsubscribe(self.queue)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        try:
+            if not text_data or len(text_data) > 512:
+                raise ValueError("Invalid stock subscription.")
+            payload = json.loads(text_data)
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid stock subscription.")
+            symbol = get_chart_symbol(str(payload.get("symbol", "")))
+            if symbol.provider != "alpaca":
+                raise ValueError("Alpaca stock data is not enabled for this symbol.")
+            await asyncio.to_thread(validate_alpaca_symbol, symbol.value)
+            if self.stream_task:
+                self.stream_task.cancel()
+                await asyncio.gather(self.stream_task, return_exceptions=True)
+            if self.queue is not None:
+                await stock_stream.unsubscribe(self.queue)
+                self.queue = None
+            self.queue = await stock_stream.subscribe(symbol.value)
+            self.stream_task = asyncio.create_task(self.forward())
+        except (ValueError, alpaca.AlpacaDataError) as exc:
+            await self.send_json({"type": "error", "message": str(exc)})
+
+    async def forward(self):
+        while True:
+            await self.send_json(await self.queue.get())

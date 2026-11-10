@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import json
+import math
+import re
 import time
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+from . import alpaca
 
 
 @dataclass(frozen=True)
@@ -125,11 +130,232 @@ def available_config() -> dict[str, Any]:
                 "exchange": symbol.exchange,
                 "group": symbol.group,
             }
-            for symbol in SYMBOLS
+            for symbol in (get_chart_symbol(item.value) for item in SYMBOLS)
         ],
         "timeframes": list(TIMEFRAMES.keys()),
         "chartCounts": [1, 2, 4, 6, 8],
+        "alpaca": alpaca.connection_info(),
     }
+
+
+def get_chart_symbol(symbol: str) -> Symbol:
+    item = get_symbol(symbol)
+    if alpaca.data_enabled() and item.provider == "yfinance" and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", item.value) and not item.value.endswith((".NS", ".BO")):
+        return replace(item, provider="alpaca")
+    return item
+
+
+def get_chart_history(symbol: str, timeframe: str):
+    item = get_chart_symbol(symbol)
+    get_timeframe(timeframe)
+    if item.provider == "alpaca":
+        return fetch_alpaca_history(item.value, timeframe)
+    return get_history(item.value, timeframe)
+
+
+def get_chart_quote(symbol: str):
+    item = get_chart_symbol(symbol)
+    if item.provider == "alpaca":
+        return fetch_alpaca_quote(item.value)
+    return get_quote(item.value)
+
+
+def validate_alpaca_symbol(symbol: str):
+    if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", symbol):
+        raise ValueError("Enter one US stock or ETF symbol.")
+    def fetch():
+        asset = alpaca.read_get(f"/v2/assets/{symbol}", paper=True)
+        if asset.get("class") != "us_equity" or asset.get("status") != "active":
+            raise ValueError("Alpaca charts require an active US stock or ETF.")
+        return asset
+    return alpaca.cached_read(("asset", symbol), fetch, ttl=3600)
+
+
+def alpaca_timestamp(value):
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        return int(stamp.timestamp())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def finite_number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_alpaca_bar(row):
+    result = {name: finite_number(row.get(key)) for name, key in (
+        ("open", "o"), ("high", "h"), ("low", "l"), ("close", "c"), ("volume", "v"),
+    )}
+    result["time"] = alpaca_timestamp(row.get("t"))
+    if any(value is None for value in result.values()):
+        raise alpaca.AlpacaDataError("Alpaca returned an invalid candle.")
+    if result["low"] > min(result["open"], result["close"]) or result["high"] < max(result["open"], result["close"]) or result["volume"] < 0:
+        raise alpaca.AlpacaDataError("Alpaca returned inconsistent candle prices.")
+    return result
+
+
+def fetch_alpaca_history(symbol: str, timeframe: str):
+    validate_alpaca_symbol(symbol)
+    get_timeframe(timeframe)
+    interval = {"1m": "1Min", "3m": "3Min", "5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": "1Hour", "4h": "4Hour", "1d": "1Day"}[timeframe]
+    def fetch():
+        # Descending pagination selects recent history, not the first page of old bars.
+        now = datetime.now(timezone.utc)
+        days = {"1m": 14, "3m": 21, "5m": 30, "15m": 60, "30m": 120, "1h": 200, "4h": 600, "1d": 1200}[timeframe]
+        params = {"symbols": symbol, "timeframe": interval, "start": (now - timedelta(days=days)).isoformat(),
+                  "end": now.isoformat(), "sort": "desc", "limit": 500, "adjustment": "raw", "feed": alpaca.data_config()["stock_feed"]}
+        bars = {}
+        tokens = set()
+        for _ in range(10):
+            result = alpaca.read_get("/v2/stocks/bars", params)
+            for row in result.get("bars", {}).get(symbol, []):
+                bar = normalize_alpaca_bar(row)
+                bars[bar["time"]] = bar
+            token = result.get("next_page_token")
+            if len(bars) >= 500 or not token:
+                return sorted(bars.values(), key=lambda row: row["time"])[-500:]
+            if token in tokens:
+                break
+            tokens.add(token)
+            params["page_token"] = token
+        raise alpaca.AlpacaDataError("Alpaca history pagination did not complete.")
+    return alpaca.cached_read(("history", symbol, timeframe), fetch, ttl=2)
+
+
+def fetch_alpaca_quote(symbol: str):
+    validate_alpaca_symbol(symbol)
+    def fetch():
+        row = alpaca.read_get(f"/v2/stocks/{symbol}/trades/latest", {"feed": alpaca.data_config()["stock_feed"]}).get("trade") or {}
+        return {"symbol": symbol, "price": finite_number(row.get("p")), "time": alpaca_timestamp(row.get("t")),
+                "previous": None, "source": "Alpaca", "feed": alpaca.data_config()["stock_feed"]}
+    return alpaca.cached_read(("quote", symbol), fetch, ttl=5)
+
+
+def alpaca_contracts(symbol: str):
+    validate_alpaca_symbol(symbol)
+    def fetch():
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        params = {"underlying_symbols": symbol, "status": "active", "limit": 10000,
+                  "expiration_date_gte": today.isoformat(), "expiration_date_lte": (today + timedelta(days=1096)).isoformat()}
+        rows, tokens = [], set()
+        for _ in range(10):
+            result = alpaca.read_get("/v2/options/contracts", params, paper=True)
+            rows.extend(result.get("option_contracts") or [])
+            token = result.get("next_page_token")
+            if not token:
+                return rows
+            if token in tokens:
+                break
+            tokens.add(token)
+            params["page_token"] = token
+        raise alpaca.AlpacaDataError("Alpaca contract pagination did not complete. Try another underlying.")
+    return alpaca.cached_read(("contracts", symbol), fetch, ttl=600)
+
+
+def alpaca_expirations(symbol: str):
+    return sorted({row["expiration_date"] for row in alpaca_contracts(symbol)})
+
+
+def fetch_alpaca_option_chain(symbol: str, expiration: str | None = None):
+    contracts = alpaca_contracts(symbol)
+    expirations = sorted({row["expiration_date"] for row in contracts})
+    if not expirations:
+        raise ValueError(f"No Alpaca option contracts found for {symbol}.")
+    expiration = expiration or expirations[0]
+    if expiration not in expirations:
+        raise ValueError("Select an available Alpaca expiration.")
+    quote = fetch_alpaca_quote(symbol)
+    def fetch():
+        snapshots, tokens = {}, set()
+        params = {"feed": alpaca.data_config()["option_feed"], "expiration_date": expiration, "limit": 1000}
+        for _ in range(20):
+            result = alpaca.read_get(f"/v1beta1/options/snapshots/{symbol}", params)
+            snapshots.update(result.get("snapshots") or {})
+            token = result.get("next_page_token")
+            if not token:
+                break
+            if token in tokens:
+                raise alpaca.AlpacaDataError("Alpaca option snapshot pagination repeated.")
+            tokens.add(token)
+            params["page_token"] = token
+        else:
+            raise alpaca.AlpacaDataError("Alpaca option snapshot pagination did not complete.")
+        underlying = quote["price"]
+        rows = []
+        for contract in contracts:
+            if contract["expiration_date"] != expiration:
+                continue
+            snap = snapshots.get(contract["symbol"]) or {}
+            latest_quote, trade, greeks = snap.get("latestQuote") or {}, snap.get("latestTrade") or {}, snap.get("greeks") or {}
+            bid, ask = finite_number(latest_quote.get("bp")), finite_number(latest_quote.get("ap"))
+            strike = finite_number(contract.get("strike_price"))
+            rows.append({
+                "contract_symbol": contract["symbol"], "option_type": contract["type"], "expiration": expiration,
+                "strike": strike, "bid": bid, "ask": ask, "last_price": finite_number(trade.get("p")),
+                "mid": (bid + ask) / 2 if bid is not None and ask is not None and 0 <= bid <= ask and ask > 0 else None,
+                "iv": finite_number(snap.get("impliedVolatility")),
+                **{name: finite_number(greeks.get(name)) for name in ("delta", "gamma", "theta", "vega", "rho")},
+                "quote_time": alpaca_timestamp(latest_quote.get("t")), "trade_time": alpaca_timestamp(trade.get("t")),
+                "volume": None, "open_interest": finite_number(contract.get("open_interest")),
+                "in_the_money": underlying is not None and strike is not None and (underlying > strike if contract["type"] == "call" else underlying < strike),
+                "multiplier": finite_number(contract.get("size")),
+            })
+        rows.sort(key=lambda row: row["strike"] or 0)
+        return {"symbol": symbol, "expiration": expiration, "expirations": expirations,
+                "calls": [row for row in rows if row["option_type"] == "call"], "puts": [row for row in rows if row["option_type"] == "put"],
+                "underlying_price": underlying, "underlying_time": quote["time"],
+                "source": "Alpaca", "feed": alpaca.data_config()["option_feed"], "read_only": not alpaca.manual_enabled(),
+                "feed_label": alpaca.connection_info()["option_label"], "updated_at": int(time.time())}
+    return alpaca.cached_read(("chain", symbol, expiration), fetch, ttl=15)
+
+
+def fetch_alpaca_bot_history(symbols, timeframe, now):
+    """Batch native aggregates; follow every page because limits apply across symbols."""
+    duration = {"5m": 300, "15m": 900, "1d": 86400}[timeframe]
+    # Match completed_bars' 30-second grace so cached forming bars never become eligible.
+    bucket = int(now.timestamp() - 30) // duration
+    def fetch():
+        params = {"symbols": ",".join(symbols), "timeframe": {"5m": "5Min", "15m": "15Min", "1d": "1Day"}[timeframe],
+                  "start": (now - timedelta(days=180 if timeframe == "1d" else 10)).isoformat(), "end": now.isoformat(),
+                  "limit": 10000, "sort": "asc", "adjustment": "split", "feed": alpaca.data_config()["stock_feed"]}
+        bars, tokens = {symbol: {} for symbol in symbols}, set()
+        for _ in range(20):
+            result = alpaca.read_get("/v2/stocks/bars", params)
+            for symbol, items in (result.get("bars") or {}).items():
+                if symbol in bars:
+                    for item in items:
+                        bar = normalize_alpaca_bar(item)
+                        bars[symbol][bar["time"]] = bar
+            token = result.get("next_page_token")
+            if not token:
+                return {symbol: sorted(items.values(), key=lambda row: row["time"]) for symbol, items in bars.items()}
+            if token in tokens:
+                break
+            tokens.add(token)
+            params["page_token"] = token
+        raise alpaca.AlpacaDataError("Bot history pagination did not complete; no signals evaluated.")
+    return alpaca.cached_read(("bot-history", tuple(symbols), timeframe, bucket), fetch, ttl=duration)
+
+
+def fetch_alpaca_bid_asks(symbols, *, options=False):
+    if not symbols:
+        return {}
+    symbols = sorted(set(symbols))
+    if len(symbols) > 100:
+        raise ValueError("At most 100 symbols per quote request.")
+    path = "/v1beta1/options/quotes/latest" if options else "/v2/stocks/quotes/latest"
+    result = alpaca.read_get(path, {"symbols": ",".join(symbols), "feed": alpaca.data_config()["option_feed" if options else "stock_feed"]})
+    return {symbol: {"bid": finite_number(row.get("bp")), "ask": finite_number(row.get("ap")), "time": alpaca_timestamp(row.get("t"))}
+            for symbol, row in (result.get("quotes") or {}).items() if symbol in symbols}
 
 
 def fetch_yfinance_history(symbol: str, timeframe: str, *, period=None, prepost=True, limit=500, ignore_tz=None) -> list[dict[str, float | int]]:
@@ -231,6 +457,32 @@ def fetch_yfinance_quote(symbol: str) -> dict[str, float | int | str | None]:
         "previous": previous,
         "time": int(timestamp.timestamp()),
     }
+
+
+def fetch_yfinance_fundamentals(symbol: str) -> dict[str, Any]:
+    """On-demand company financials; normalization and caching belong to the caller."""
+    import yfinance as yf
+
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,14}", symbol):
+        raise ValueError("Use a valid ticker symbol.")
+    ticker = yf.Ticker(symbol)
+    info = ticker.get_info()
+    if not isinstance(info, dict) or not (info.get("longName") or info.get("shortName")):
+        raise ValueError("Company information is unavailable for this ticker.")
+    result = {"info": info, "statements": {}, "warnings": []}
+    if info.get("quoteType") != "EQUITY":
+        return result
+    for frequency in ("yearly", "quarterly"):
+        result["statements"][frequency] = {}
+        for name, method in (("income", ticker.get_income_stmt), ("balance", ticker.get_balance_sheet), ("cash_flow", ticker.get_cash_flow)):
+            try:
+                frame = method(freq=frequency, pretty=False)
+                result["statements"][frequency][name] = frame
+                if frame is None or frame.empty:
+                    result["warnings"].append(f"{frequency.title()} {name.replace('_', ' ')} statement unavailable.")
+            except Exception:
+                result["warnings"].append(f"{frequency.title()} {name.replace('_', ' ')} statement unavailable.")
+    return result
 
 
 def cached_yfinance_history(symbol: str, timeframe: str) -> list[dict[str, float | int]]:

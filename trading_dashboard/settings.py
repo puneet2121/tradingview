@@ -14,6 +14,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "channels",
     "dashboard.apps.DashboardConfig",
+    "smart_money.apps.SmartMoneyConfig",
 ]
 
 MIDDLEWARE = [
@@ -38,11 +39,27 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TIME_ZONE = "America/Los_Angeles"
 USE_TZ = True
+SMART_MONEY = {
+    "provider": os.environ.get("SMART_MONEY_PROVIDER", "none"),
+    "option_feed": os.environ.get("SMART_MONEY_OPTION_FEED", "opra"),
+    "allow_storage": os.environ.get("SMART_MONEY_ALLOW_STORAGE", "false").lower() == "true",
+    "allow_sharing": os.environ.get("SMART_MONEY_ALLOW_SHARING", "false").lower() == "true",
+    "allow_fundamentals_sharing": os.environ.get("SMART_MONEY_ALLOW_FUNDAMENTALS_SHARING", "false").lower() == "true",
+    "allow_discord": os.environ.get("SMART_MONEY_ALLOW_DISCORD", "false").lower() == "true",
+    "delay_seconds": int(os.environ.get("SMART_MONEY_DELAY_SECONDS", "900")),
+    "sec_user_agent": os.environ.get("SEC_USER_AGENT", ""),
+}
+SMART_MONEY_WORKER_ENABLED = os.environ.get("SMART_MONEY_WORKER_ENABLED", "true").lower() == "true"
 PAPER_SCANNER_ENABLED = os.environ.get("PAPER_SCANNER_ENABLED", "true").lower() == "true"
 PAPER_SCANNER_INTERVAL_SECONDS = 60
 ALERT_SCANNER_ENABLED = os.environ.get("ALERT_SCANNER_ENABLED", "true").lower() == "true"
 
 ALPACA_PAPER_ENABLED = os.environ.get("ALPACA_PAPER_ENABLED", "false").lower() == "true"
+from .alpaca_config import load_alpaca_config
+
+ALPACA_DATA = load_alpaca_config(BASE_DIR)
+ALPACA_MANUAL_PAPER_ENABLED = os.environ.get("ALPACA_MANUAL_PAPER_ENABLED", "true").lower() == "true"
+ALPACA_AUTO_PAPER_ENABLED = os.environ.get("ALPACA_AUTO_PAPER_ENABLED", "true").lower() == "true"
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_PAPER_TRADING_BASE_URL = os.environ.get(
@@ -52,7 +69,9 @@ ALPACA_PAPER_TRADING_BASE_URL = os.environ.get(
 ALPACA_ORDER_TIME_IN_FORCE = os.environ.get("ALPACA_ORDER_TIME_IN_FORCE", "day")
 
 DISCORD_ALERTS_ENABLED = os.environ.get("DISCORD_ALERTS_ENABLED", "true")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1546922693952016485/zaTewCRMTkbw8-UurJeeIFPQA6dyBnMLNBycZEPqqLjFRrE1x8TQlFoV2-clBeQHA0oA")
+from .discord_config import load_discord_webhook
+
+DISCORD_WEBHOOK_URL = load_discord_webhook(BASE_DIR)
 DISCORD_ALERT_STRATEGY_ONLY = os.environ.get("DISCORD_ALERT_STRATEGY_ONLY", "true").lower() == "true"
 DISCORD_REGULAR_MARKET_HOURS_ONLY = os.environ.get("DISCORD_REGULAR_MARKET_HOURS_ONLY", "true").lower() == "true"
 DISCORD_ALERT_USERNAME = os.environ.get("DISCORD_ALERT_USERNAME", "Trading Dashboard")

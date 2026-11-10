@@ -1,0 +1,89 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smart Money | Trading Dashboard</title>
+  <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
+  <link rel="stylesheet" href="{% static 'smart_money/dashboard.css' %}">
+  <link rel="stylesheet" href="{% static 'smart_money/fundamentals.css' %}">
+  <script defer src="{% static 'smart_money/fundamentals.js' %}"></script>
+  <script defer src="{% static 'smart_money/dashboard.js' %}"></script>
+</head>
+<body class="sm">
+  <header class="sm-top"><a href="/">Trading Dashboard</a><span class="sm-divider">/</span><strong>Smart Money</strong><span class="sm-badge">Research only</span><span class="sm-clock" id="clock"></span></header>
+  <div class="sm-layout">
+    <nav class="sm-nav" aria-label="Smart Money sections">
+      <span class="sm-nav-label">INTELLIGENCE</span>
+      <button data-view="overview" aria-current="page">Overview</button>
+      <button data-view="fundamentals">Fundamental Analysis</button>
+      <button data-view="flow">Live Options Flow</button>
+      <button data-view="scanner">Unusual Scanner</button>
+      <button data-view="biggest">Biggest Transactions</button>
+      <button data-view="analysis">CALL vs PUT</button>
+      <button data-view="darkpool">Dark Pool &amp; Blocks</button>
+      <span class="sm-nav-label">DISCLOSURES</span>
+      <button data-view="holdings">Institutional Holdings</button>
+      <button data-view="insiders">Insider Transactions</button>
+      <span class="sm-nav-label">WORKSPACE</span>
+      <button data-view="history">Historical Activity</button>
+      <button data-view="settings">Alerts &amp; Settings</button>
+      <div class="sm-nav-foot"><span id="provider-name">No flow provider</span><small id="provider-mode">Not connected</small></div>
+    </nav>
+    <main>
+      <div class="sm-heading"><div><p class="sm-eyebrow">OPTIONS INTELLIGENCE</p><h1 id="view-title">Overview</h1></div><button id="refresh" type="button">Refresh</button></div>
+      <div id="connection" class="sm-status" role="status">Loading connection status...</div>
+      <div id="error" class="sm-error" role="alert" hidden></div>
+      <form id="filters" class="sm-filters">
+        <label>Tickers<input name="symbols" placeholder="All collected tickers" maxlength="400"></label>
+        <label>Premium<select name="min_premium"><option value="50000">$50K+</option><option value="100000">$100K+</option><option value="250000">$250K+</option><option value="500000">$500K+</option><option value="1000000">$1M+</option><option value="5000000">$5M+</option></select></label>
+        <label>Contract<select name="option_type"><option value="">CALL + PUT</option><option>CALL</option><option>PUT</option></select></label>
+        <label>From (New York)<input name="from" type="date" required></label><label>To<input name="to" type="date" required></label>
+        <details><summary>More filters</summary><div class="sm-filter-extra">
+          <label>Min. contracts<input name="min_quantity" type="number" min="0" max="1000000000" value="0"></label>
+          <label>Min. score<input name="min_score" type="number" min="0" max="100" value="0"></label>
+          <label>Min. repeats<input name="min_repeats" type="number" min="0" max="10000" value="0"></label>
+          <label>Strike<input name="strike" type="number" min="0.000001" step="any"></label>
+          <label>Expiry from<input name="expiry_from" type="date"></label><label>Expiry to<input name="expiry_to" type="date"></label>
+          <label>Execution<select name="classification"><option value="">All</option><option value="UNKNOWN">Unknown</option><option value="ASK_SIDE">Near ask</option><option value="BID_SIDE">Near bid</option></select></label>
+          <label>Structure<select name="structure"><option value="">All</option><option value="UNKNOWN">Unknown</option><option value="SWEEP">Sweep</option><option value="BLOCK">Block</option></select></label>
+          <label>Min. volume / OI<input name="min_vol_oi" type="number" min="0.001" step="any"></label>
+          <label>Flow + technicals<select name="confirmation"><option value="">All</option><option value="BULLISH">Bullish confirmation</option><option value="BEARISH">Bearish confirmation</option></select></label>
+        </div></details>
+        <button type="submit" class="sm-primary">Apply</button><button type="button" id="save-filter">Save filters</button><button type="button" id="clear-filter">Reset</button>
+      </form>
+      <section id="metrics" class="sm-metrics" aria-label="Activity summary"></section>
+      <section id="content" aria-live="polite"><div class="sm-empty">Loading activity...</div></section>
+      <section id="settings" hidden>
+        <div class="sm-section-head"><h2>Shared collection</h2><span>Independent of trading automation</span></div>
+        <form id="collection-form" class="sm-settings-form">
+          <label class="sm-check"><input name="enabled" type="checkbox"> Collect verified options transactions</label>
+          <label>Scanner watchlist<textarea name="symbols" rows="2" maxlength="400" required></textarea></label>
+          <label>Collection minimum<select name="min_premium"><option value="50000">$50,000</option><option value="100000">$100,000</option><option value="250000">$250,000</option><option value="500000">$500,000</option><option value="1000000">$1 million</option><option value="5000000">$5 million</option></select></label>
+          <label class="sm-check"><input name="sec_enabled" type="checkbox"> Collect SEC disclosures</label>
+          <label>SEC CIKs<input name="sec_ciks" placeholder="Up to 5 filer CIKs" maxlength="70"></label>
+          <div><button class="sm-primary">Save collection settings</button></div>
+        </form>
+        <div id="capabilities" class="sm-facts"></div>
+        <div class="sm-section-head"><h2>My Discord alerts</h2><span>Shared channel / regular market hours</span></div>
+        <form id="alert-form" class="sm-settings-form">
+          <input type="hidden" name="id"><input type="hidden" name="revision">
+          <label>Rule name<input name="name" maxlength="80" required placeholder="Large NVDA calls"></label>
+          <label>Tickers<input name="symbols" maxlength="400" placeholder="All collected tickers"></label>
+          <label>Minimum premium<select name="min_premium"><option value="50000">$50K+</option><option value="100000">$100K+</option><option value="250000">$250K+</option><option value="500000">$500K+</option><option value="1000000">$1M+</option><option value="5000000">$5M+</option></select></label>
+          <label>Contract<select name="option_type"><option value="">CALL + PUT</option><option>CALL</option><option>PUT</option></select></label>
+          <label>Min. repeats<input name="min_repeats" type="number" min="0" max="10000" value="0"></label>
+          <label>Min. score<input name="min_score" type="number" min="0" max="100" value="0"></label>
+          <label class="sm-check"><input name="enabled" type="checkbox"> Enabled</label>
+          <div><button class="sm-primary">Save alert</button> <button type="button" id="cancel-alert">Cancel edit</button></div>
+        </form>
+        <div id="alert-list"></div><div class="sm-section-head"><h2>Delivery history</h2></div><div id="delivery-list"></div>
+        <div class="sm-section-head"><h2>Collector health</h2></div><div id="cursor-list"></div>
+      </section>
+      <footer class="sm-footer"><span id="freshness">No verified transactions received</span><span id="context-note">Premium is not bullish conviction. Unknown intent stays unknown.</span></footer>
+    </main>
+  </div>
+  <dialog id="detail-dialog"><header><h2 id="detail-title">Transaction</h2><button id="close-detail" type="button">Close</button></header><div id="detail-body"></div></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

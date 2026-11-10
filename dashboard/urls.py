@@ -1,8 +1,18 @@
-from django.urls import path
+from django.urls import include, path
 
-from . import alert_views, pine_scripts, views
+from . import alert_views, alpaca_views, pine_scripts, views
 
 urlpatterns = [
+    path("", include("smart_money.urls")),
+    path("api/alpaca/connection/", alpaca_views.connection, name="alpaca_connection"),
+    path("api/alpaca/bot/", alpaca_views.bot_state, name="alpaca_bot_state"),
+    path("api/alpaca/bot/control/", alpaca_views.bot_control, name="alpaca_bot_control"),
+    path("api/alpaca/orders/prepare/", alpaca_views.prepare_order, name="alpaca_order_prepare"),
+    path("api/alpaca/orders/<uuid:order_id>/", alpaca_views.order_status, name="alpaca_order_status"),
+    path("api/alpaca/orders/<uuid:order_id>/submit/", alpaca_views.submit_order, name="alpaca_order_submit"),
+    path("api/alpaca/orders/<uuid:order_id>/cancel/", alpaca_views.cancel_order, name="alpaca_order_cancel"),
+    path("api/alpaca/options/expirations/", alpaca_views.expirations, name="alpaca_expirations"),
+    path("api/alpaca/options/chain/", alpaca_views.chain, name="alpaca_chain"),
     path("api/alerts/", alert_views.alerts, name="market_alerts"),
     path("api/alerts/events/", alert_views.events, name="market_alert_events"),
     path("api/alerts/<int:alert_id>/", alert_views.alerts, name="market_alert"),
