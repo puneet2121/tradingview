@@ -1,20 +1,23 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack, redirect_stdout
 from io import StringIO
 import importlib
 import json
 import os
 from pathlib import Path
 from urllib.parse import quote
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import DatabaseError, OperationalError
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
+from deploy import start
 from .cloud_config import database, flag, identity, schema_name
 from .cloud_db import set_private_schema
+from .cloud_errors import CloudBootstrapError, CloudConfigurationError
 from .discord_config import load_discord_webhook
 
 IDENTITY = {"APP_HOSTS":"trade.example.com", "DJANGO_SECRET_KEY":"test-only-" + "aB8xK2zP5qR0vC7nM4sD9tL6jF3wH1"*2}
@@ -141,7 +144,7 @@ class CloudConfigurationTests(SimpleTestCase):
         set_private_schema(None, conn)
         cursor.execute.assert_any_call("SELECT set_config('search_path', %s, false)", ["trading_app"])
         cursor.fetchone.return_value = ("public",)
-        with self.assertRaises(ImproperlyConfigured):
+        with self.assertRaisesRegex(CloudConfigurationError, "missing or not accessible"):
             set_private_schema(None, conn)
 
     def test_cloud_ignores_local_credentials_and_requires_explicit_automation(self):
@@ -165,6 +168,93 @@ class CloudConfigurationTests(SimpleTestCase):
             read.assert_not_called()
         with patch.dict(os.environ, {"DISCORD_WEBHOOK_URL":"environment-value"}, clear=True):
             self.assertEqual(load_discord_webhook("/not-used"), "environment-value")
+
+
+@override_settings(DATABASE_SCHEMA="trading_app")
+class CloudStartupTests(SimpleTestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.dict(os.environ, {
+            "PORT": "12345", "CLOUD_INITIAL_PASSWORDS": "private-test-login-secret",
+        }))
+        self.stack.enter_context(patch("deploy.start.os.chdir"))
+        self.setup_mock = self.stack.enter_context(patch("django.setup"))
+        self.connection = MagicMock()
+        self.connection.cursor.return_value.__enter__.return_value.fetchone.return_value = ("trading_app",)
+        self.stack.enter_context(patch("django.db.connection", self.connection))
+        self.commands = self.stack.enter_context(patch("django.core.management.call_command"))
+        self.close_all = self.stack.enter_context(patch("django.db.connections.close_all"))
+        self.execv = self.stack.enter_context(patch("deploy.start.os.execv"))
+        self.output = StringIO()
+        self.stack.enter_context(redirect_stdout(self.output))
+
+    def test_success_migrates_then_creates_users_before_one_worker(self):
+        start.main()
+        self.assertEqual(self.commands.call_args_list, [
+            call("migrate", interactive=False), call("bootstrap_cloud_users"),
+        ])
+        self.close_all.assert_called_once_with()
+        self.execv.assert_called_once()
+        argv = self.execv.call_args.args[1]
+        self.assertEqual(argv[argv.index("--workers") + 1], "1")
+        self.assertEqual(argv[argv.index("--port") + 1], "12345")
+        self.assertIn("--no-proxy-headers", argv)
+        self.assertNotIn("CLOUD_INITIAL_PASSWORDS", os.environ)
+        self.assertNotIn("private-test-login-secret", self.output.getvalue())
+
+    def test_safe_configuration_message_is_preserved(self):
+        self.setup_mock.side_effect = CloudConfigurationError("DJANGO_SECRET_KEY is missing.")
+        with self.assertRaisesRegex(SystemExit, "during configuration.*DJANGO_SECRET_KEY is missing"):
+            start.main()
+        self.connection.cursor.assert_not_called()
+        self.commands.assert_not_called()
+        self.execv.assert_not_called()
+
+    def test_schema_signal_failure_stops_before_any_migrations(self):
+        self.connection.cursor.side_effect = CloudConfigurationError("DATABASE_SCHEMA is missing or not accessible.")
+        with self.assertRaisesRegex(SystemExit, "during database/schema.*DATABASE_SCHEMA is missing"):
+            start.main()
+        self.commands.assert_not_called()
+        self.execv.assert_not_called()
+
+    def test_wrong_current_schema_does_not_modify_public_tables(self):
+        self.connection.cursor.return_value.__enter__.return_value.fetchone.return_value = ("public",)
+        with self.assertRaisesRegex(SystemExit, "during database/schema.*not using DATABASE_SCHEMA"):
+            start.main()
+        self.commands.assert_not_called()
+        self.execv.assert_not_called()
+
+    def test_database_error_does_not_expose_driver_credentials(self):
+        secret = "postgresql://user:private-test-password@private-host/db"
+        self.connection.cursor.side_effect = OperationalError(secret)
+        with self.assertRaisesRegex(SystemExit, "during database/schema") as error:
+            start.main()
+        self.assertNotIn(secret, str(error.exception) + self.output.getvalue())
+        self.assertTrue(error.exception.__suppress_context__)
+        self.execv.assert_not_called()
+
+    def test_framework_configuration_errors_are_not_printed_verbatim(self):
+        self.setup_mock.side_effect = ImproperlyConfigured("private-test-configuration-secret")
+        with self.assertRaisesRegex(SystemExit, "during configuration") as error:
+            start.main()
+        self.assertNotIn("private-test-configuration-secret", str(error.exception) + self.output.getvalue())
+        self.execv.assert_not_called()
+
+    def test_migration_failure_does_not_run_bootstrap_or_server(self):
+        self.commands.side_effect = DatabaseError("private-test-migration-content")
+        with self.assertRaisesRegex(SystemExit, "during migrations") as error:
+            start.main()
+        self.assertNotIn("private-test-migration-content", str(error.exception))
+        self.commands.assert_called_once_with("migrate", interactive=False)
+        self.execv.assert_not_called()
+
+    def test_bootstrap_error_names_the_required_variable(self):
+        self.commands.side_effect = [None, CloudBootstrapError("Set CLOUD_INITIAL_PASSWORDS to a JSON object.")]
+        with self.assertRaisesRegex(SystemExit, "during initial logins.*CLOUD_INITIAL_PASSWORDS") as error:
+            start.main()
+        self.assertNotIn("private-test-login-secret", str(error.exception) + self.output.getvalue())
+        self.execv.assert_not_called()
 
 
 @override_settings(CLOUD_DEPLOYMENT=True, SHARING_USERS=USERS)

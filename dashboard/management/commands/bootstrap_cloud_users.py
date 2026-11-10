@@ -5,8 +5,10 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 from django.db import transaction
+
+from trading_dashboard.cloud_errors import CloudBootstrapError
 
 
 class Command(BaseCommand):
@@ -14,7 +16,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if not getattr(settings, "CLOUD_DEPLOYMENT", False):
-            raise CommandError("This command is only available with cloud_settings.")
+            raise CloudBootstrapError("This command is only available with cloud_settings.")
         User = get_user_model()
         missing = set(settings.SHARING_USERS) - set(User.objects.filter(username__in=settings.SHARING_USERS).values_list("username", flat=True))
         if not missing:
@@ -32,7 +34,7 @@ class Command(BaseCommand):
             if len({passwords[name] for name in missing}) != len(missing):
                 raise ValueError
         except (ValueError, TypeError, ValidationError):
-            raise CommandError("Set CLOUD_INITIAL_PASSWORDS to a JSON object with a distinct strong password (at least 12 characters) for each missing SHARING_USERS login. No credentials were changed.") from None
+            raise CloudBootstrapError("Set CLOUD_INITIAL_PASSWORDS to a JSON object with a distinct strong password (at least 12 characters) for each missing SHARING_USERS login. No credentials were changed.") from None
         with transaction.atomic():
             for username in sorted(missing):
                 user, created = User.objects.get_or_create(username=username)

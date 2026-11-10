@@ -176,8 +176,19 @@ Keep one replica and check credits/usage before relying on the service.
   printing its value; older deployed commits show the combined error message.
 - **Startup fails:** check that the private schema exists, the connection URI
   uses Session pooler port 5432 with a URL-encoded password, Supabase is active,
-  and all required environment variables are present. Errors deliberately
-  avoid printing the connection string or initial passwords.
+  and all required environment variables are present. Updated startup logs name
+  the failed stage: `configuration`, `database/schema`, `migrations`, or
+  `initial logins`. Safe application errors identify the relevant setting;
+  raw database/framework errors are not printed because they may contain secrets.
+- **Startup reports a missing/inaccessible private schema:** setting
+  `DATABASE_SCHEMA=trading_app` in Render does not create it in Supabase. Run
+  the SQL in step 1 in the same Supabase project used by `DATABASE_URL`, then
+  redeploy. The connecting database role needs `USAGE` and `CREATE` on that
+  schema. The schema owner already has these privileges; a custom restricted
+  database role needs an explicit grant from the owner. Do not grant access to
+  Supabase's `anon`/`authenticated` roles or switch to `public` to bypass this.
+  If the log still only says `Cloud startup failed (ImproperlyConfigured)`,
+  deploy the updated startup script to get the specific safe error.
 - **Build fails in `cloud_config.database`:** this is local configuration
   validation, before connecting to Supabase. In Render's service Environment
   page, set `DATABASE_URL` to the complete URI from **Supabase > Connect >
