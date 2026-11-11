@@ -61,6 +61,7 @@ def main():
             f"{detail} No web server was started."
         ) from None
     os.environ.pop("CLOUD_INITIAL_PASSWORDS", None)
+    os.environ.pop("CLOUD_TEMPORARY_SHARED_PASSWORD", None)
     print("Cloud startup: starting web server", flush=True)
     os.execv(sys.executable, [sys.executable, "-m", "uvicorn", "trading_dashboard.asgi:application",
         "--host", "0.0.0.0", "--port", str(port), "--workers", "1", "--no-proxy-headers"])

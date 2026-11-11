@@ -81,6 +81,33 @@ These are **new cloud credentials**, not the passwords in local
 `credentials.txt`. Give each person only their own login privately. There is no
 public sign-up. All four users can change the shared paper account and strategies.
 
+### Temporary Shared Password
+
+For temporary testing only, startup supports an explicit shared-password
+override. In **Render > your service > Environment**, set the secret variable
+`CLOUD_TEMPORARY_SHARED_PASSWORD` to the shared password you choose, then deploy
+the updated code. Enter only the password, not JSON or surrounding quotes.
+This mode accepts 10 to 256 characters and retains the other password checks;
+the normal unique-password setup above still requires at least 12 characters.
+Do not commit the value or add it to `render.yaml`.
+
+This **resets existing passwords and creates missing logins** for all four
+`SHARING_USERS`. It takes precedence over `CLOUD_INITIAL_PASSWORDS`. Account
+permissions, disabled status, trades, and other records are not changed.
+Changed passwords invalidate existing Django login sessions; sign in again.
+
+After the deployment succeeds, remove `CLOUD_TEMPORARY_SHARED_PASSWORD` from
+Render so future restarts cannot reapply it. Also remove `CLOUD_INITIAL_PASSWORDS`
+once all four logins exist. Removing these variables does **not** revert or
+expire the saved passwords: they remain until you explicitly change them.
+Identical passwords are not rehashed on restart, and secrets are removed from
+the web server's startup environment and are never printed by the bootstrap.
+
+A shared password allows anyone who knows it to impersonate any of the four
+users and operate the shared trading controls. Use distinct strong passwords
+before relying on the app for ongoing production use. This override does not
+change `DJANGO_SECRET_KEY` requirements or disable login rate limiting.
+
 ## 3. Deploy on Render
 
 1. Select **New > Blueprint** and connect the reviewed private repository.
@@ -161,6 +188,43 @@ Keep one replica and check credits/usage before relying on the service.
 - Back up before schema changes. A hosting code rollback does not roll back
   database migrations. Keep one instance: channel delivery and provider
   subscriptions currently rely on a single ASGI process.
+
+## Fundamentals on a Shared Deployment
+
+The message "Yahoo research is local personal use. Shared access requires
+separate data-use permission." is an application permission check, not a
+Supabase error or a failed Yahoo request. Cloud deployments use authenticated
+shared access, so Yahoo fundamentals and combined research ratings are disabled
+until their separate data-use permission is confirmed.
+
+If your data-use rights cover the deployed app and its users, add this variable
+under **Render > your service > Environment**, then save and redeploy:
+
+```text
+SMART_MONEY_ALLOW_FUNDAMENTALS_SHARING=true
+```
+
+This setting records your confirmation; it does not obtain a data license.
+The [yfinance documentation](https://ranaroussi.github.io/yfinance/) describes
+the Yahoo Finance API as intended for personal use and directs users to Yahoo's
+terms. Deploying the app or restricting it to four logins does not itself
+establish permission to share provider data. Leave the flag unset/false unless
+your use is permitted. Do not disable authentication or sharing mode to bypass
+the check.
+
+Company snapshots and daily research reads refresh on demand and use database
+caches. They do not require `CLOUD_SCANNERS_ENABLED` or
+`SMART_MONEY_WORKER_ENABLED`, and this flag does not enable orders, Discord
+alerts, or options-flow sharing. Provider outages and rate limits can still
+prevent a refresh after permission is enabled.
+
+For a different production source, the
+[SEC Company Facts API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)
+offers filed financial-statement data without API keys, subject to SEC automated
+access requirements. It is not yet a fundamentals backend in this app and is
+not a replacement for market quotes or analyst estimates. Alternatively, use a
+provider whose agreement covers your intended display and sharing. Either
+alternative requires a provider integration, not just this Yahoo permission flag.
 
 ## Troubleshooting
 

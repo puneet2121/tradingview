@@ -177,6 +177,7 @@ class CloudStartupTests(SimpleTestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.dict(os.environ, {
             "PORT": "12345", "CLOUD_INITIAL_PASSWORDS": "private-test-login-secret",
+            "CLOUD_TEMPORARY_SHARED_PASSWORD": "private-test-shared-secret",
         }))
         self.stack.enter_context(patch("deploy.start.os.chdir"))
         self.setup_mock = self.stack.enter_context(patch("django.setup"))
@@ -201,7 +202,9 @@ class CloudStartupTests(SimpleTestCase):
         self.assertEqual(argv[argv.index("--port") + 1], "12345")
         self.assertIn("--no-proxy-headers", argv)
         self.assertNotIn("CLOUD_INITIAL_PASSWORDS", os.environ)
+        self.assertNotIn("CLOUD_TEMPORARY_SHARED_PASSWORD", os.environ)
         self.assertNotIn("private-test-login-secret", self.output.getvalue())
+        self.assertNotIn("private-test-shared-secret", self.output.getvalue())
 
     def test_safe_configuration_message_is_preserved(self):
         self.setup_mock.side_effect = CloudConfigurationError("DJANGO_SECRET_KEY is missing.")
@@ -285,6 +288,86 @@ class CloudBootstrapTests(TestCase):
     def test_bootstrap_cannot_modify_local_accounts(self):
         with self.assertRaises(CommandError):
             call_command("bootstrap_cloud_users")
+
+
+@override_settings(CLOUD_DEPLOYMENT=True, SHARING_USERS=USERS)
+class CloudSharedPasswordTests(TestCase):
+    def setUp(self):
+        from .private_settings import AUTH_PASSWORD_VALIDATORS
+        self.validators = override_settings(AUTH_PASSWORD_VALIDATORS=AUTH_PASSWORD_VALIDATORS)
+        self.validators.enable()
+        self.addCleanup(self.validators.disable)
+        self.password = "d7X!q2K#v9"  # Test fixture, not a deployed credential.
+        self.env = patch.dict(os.environ, {"CLOUD_TEMPORARY_SHARED_PASSWORD": self.password}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.output = StringIO()
+
+    def test_shared_password_updates_only_allowed_users_and_preserves_status(self):
+        User = get_user_model()
+        disabled = User.objects.create_user(username="trader1", password=PASSWORDS["trader1"], is_active=False)
+        outsider = User.objects.create_user(username="outsider", password="Outsider-Test-Password-91!")
+        os.environ["CLOUD_INITIAL_PASSWORDS"] = "unused-invalid-json"
+        call_command("bootstrap_cloud_users", stdout=self.output)
+        allowed = list(User.objects.filter(username__in=USERS))
+        self.assertEqual(len(allowed), 4)
+        self.assertTrue(all(user.check_password(self.password) for user in allowed))
+        self.assertEqual(len({user.password for user in allowed}), 4)
+        self.assertTrue(all(not user.is_staff and not user.is_superuser for user in allowed))
+        disabled.refresh_from_db()
+        self.assertFalse(disabled.is_active)
+        original = outsider.password
+        outsider.refresh_from_db()
+        self.assertEqual(outsider.password, original)
+        self.assertNotIn(self.password, self.output.getvalue())
+
+    def test_repeated_start_and_removing_override_preserve_saved_hashes(self):
+        User = get_user_model()
+        call_command("bootstrap_cloud_users", stdout=self.output)
+        hashes = dict(User.objects.values_list("username", "password"))
+        call_command("bootstrap_cloud_users", stdout=self.output)
+        self.assertEqual(dict(User.objects.values_list("username", "password")), hashes)
+        del os.environ["CLOUD_TEMPORARY_SHARED_PASSWORD"]
+        call_command("bootstrap_cloud_users", stdout=self.output)
+        self.assertEqual(dict(User.objects.values_list("username", "password")), hashes)
+
+    def test_invalid_shared_passwords_fail_without_partial_changes_or_secret_output(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="trader1", password=PASSWORDS["trader1"])
+        original = user.password
+        for password in ("", "short", "1234567890", "password123", "trader12345", "x" * 257):
+            os.environ["CLOUD_TEMPORARY_SHARED_PASSWORD"] = password
+            with self.assertRaisesRegex(CloudBootstrapError, "CLOUD_TEMPORARY_SHARED_PASSWORD") as error:
+                call_command("bootstrap_cloud_users", stdout=self.output)
+            self.assertEqual(User.objects.count(), 1)
+            user.refresh_from_db()
+            self.assertEqual(user.password, original)
+            if password:
+                self.assertNotIn(password, str(error.exception) + self.output.getvalue())
+
+    def test_database_failure_rolls_back_all_password_changes(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="trader1", password=PASSWORDS["trader1"])
+        original = user.password
+        save = User.save
+
+        def fail_third_password(instance, *args, **kwargs):
+            if instance.username == "trader3" and kwargs.get("update_fields") == ["password"]:
+                raise DatabaseError("Simulated write failure")
+            return save(instance, *args, **kwargs)
+
+        with patch.object(User, "save", fail_third_password):
+            with self.assertRaises(DatabaseError):
+                call_command("bootstrap_cloud_users", stdout=self.output)
+        self.assertEqual(User.objects.count(), 1)
+        user.refresh_from_db()
+        self.assertEqual(user.password, original)
+
+    @override_settings(CLOUD_DEPLOYMENT=False)
+    def test_shared_override_cannot_reset_local_accounts(self):
+        with self.assertRaises(CloudBootstrapError):
+            call_command("bootstrap_cloud_users", stdout=self.output)
+        self.assertFalse(get_user_model().objects.exists())
 
 
 @contextmanager
